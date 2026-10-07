@@ -191,6 +191,36 @@ pub fn parse_records(buf: &mut Vec<u8>) -> Vec<(u64, [f32; 3], [f32; 3])> {
     out
 }
 
+/// Debug: replace the IMU with a slow synthetic head sweep so SteamVR's gaze pointer crosses the UI without anyone wearing the
+/// glasses. Yaw +-25 degrees over 10 s and pitch +-12 degrees over 7 s.
+pub fn run_sim(pose: Arc<Mutex<PoseState>>) {
+    let start = std::time::Instant::now();
+    let mut prev: Quat = [1.0, 0.0, 0.0, 0.0];
+    let mut prev_t = 0.0f64;
+    loop {
+        std::thread::sleep(Duration::from_millis(2));
+        let t = start.elapsed().as_secs_f64();
+        let yaw = 25f64.to_radians() * (2.0 * std::f64::consts::PI * t / 10.0).sin();
+        let pitch = 12f64.to_radians() * (2.0 * std::f64::consts::PI * t / 7.0).sin();
+        let qy = [(yaw / 2.0).cos(), 0.0, (yaw / 2.0).sin(), 0.0];
+        let qp = [(pitch / 2.0).cos(), (pitch / 2.0).sin(), 0.0, 0.0];
+        let q = qmul(qy, qp);
+        let dt = (t - prev_t).max(1e-6);
+        // world-frame angular velocity from the change in orientation: 2 * vec(q_new * conj(q_old)) / dt
+        let d = qmul(q, [prev[0], -prev[1], -prev[2], -prev[3]]);
+        let sign = if d[0] < 0.0 { -1.0 } else { 1.0 };
+        let w = [2.0 * sign * d[1] / dt, 2.0 * sign * d[2] / dt, 2.0 * sign * d[3] / dt];
+        prev = q;
+        prev_t = t;
+        *pose.lock().unwrap() = PoseState {
+            q: [q[0] as f32, q[1] as f32, q[2] as f32, q[3] as f32],
+            omega: [w[0] as f32, w[1] as f32, w[2] as f32],
+            timestamp_ns: (t * 1e9) as u64,
+            valid: true,
+        };
+    }
+}
+
 /// Read the IMU forever (reconnecting) and keep `pose` up to date.
 pub fn run(pose: Arc<Mutex<PoseState>>) {
     let hosts = ["169.254.1.1:52998", "169.254.2.1:52998"];

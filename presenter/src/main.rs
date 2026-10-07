@@ -4,7 +4,7 @@
 //! glasses really show a different image to each eye in their SBS mode. It will grow into the thing that imports
 //! SteamVR's per-eye textures and presents them.
 //!
-//! usage: xreal-presenter [--monitor NAME] [--reproject]      (default monitor name: DP-1)
+//! usage: xreal-presenter [--monitor NAME] [--reproject] [--guard-ms N] [--sim-pose] [--dump DIR]      (default monitor name: DP-1)
 //!
 //! Left half of the screen = left eye (red tint), right half = right eye (blue tint). A green square slides across
 //! each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
@@ -60,6 +60,7 @@ struct PresentMsg {
     frame: u32,
     at: Instant,
     render_q: Option<[f32; 4]>, // head orientation SteamVR rendered this frame for (w, x, y, z)
+    bounds: [[f32; 4]; 2],       // per eye: valid region of the texture (umin, vmin, umax, vmax)
 }
 
 #[derive(Default)]
@@ -165,7 +166,12 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
                         sh.previous = sh.present;
                         let q = [f32::from_bits(words[6]), f32::from_bits(words[7]), f32::from_bits(words[8]), f32::from_bits(words[9])];
                         let render_q = if q.iter().all(|v| v.is_finite()) && q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3] > 0.5 { Some(q) } else { None };
-                        sh.present = Some(PresentMsg { left: (words[1], words[2]), right: (words[3], words[4]), frame: words[5], at: Instant::now(), render_q });
+                        let unpack = |lo: u32, hi: u32| [(lo & 0xffff) as f32 / 65535.0, (lo >> 16) as f32 / 65535.0, (hi & 0xffff) as f32 / 65535.0, (hi >> 16) as f32 / 65535.0];
+                        let mut bounds = [unpack(words[10], words[11]), unpack(words[12], words[13])];
+                        for b in bounds.iter_mut() {
+                            if b[0] == b[2] && b[1] == b[3] { *b = [0.0, 0.0, 1.0, 1.0]; } // older driver or empty: whole texture
+                        }
+                        sh.present = Some(PresentMsg { left: (words[1], words[2]), right: (words[3], words[4]), frame: words[5], at: Instant::now(), render_q, bounds });
                     }
                     _ => {
                         for fd in fds {
@@ -202,6 +208,11 @@ struct Eyes {
     imgs: [(vk::Image, u32, u32); 2],
     sets: [vk::DescriptorSet; 2],
     render_q: Option<[f32; 4]>,
+    bounds: [[f32; 4]; 2],
+    frame: u32,            // SteamVR's present counter for this frame
+    slot: (u32, u32),      // left eye (set id, index)
+    used_previous: bool,   // the frame-age guard picked the previous frame
+    age_ms: f32,           // how old the chosen frame was
 }
 
 struct Gfx {
@@ -229,11 +240,17 @@ struct Gfx {
     vsync_seq: u32,
     warp: Option<WarpPipe>,
     reproject: bool,
+    dump_dir: Option<std::path::PathBuf>,
+    dump_remaining: u32,
+    dump_count: u32,
+    dump_index: u32,
+    pub fallbacks: u32,  // frames drawn as the test pattern while the driver was connected (should stay 0)
+    guard_ms: u64,       // how old a presented frame must be before we show it
     last_delta_deg: f32, // head rotation between SteamVR's render pose and now, last warped frame
 }
 
 impl Gfx {
-    unsafe fn new(window: &Window, reproject: bool) -> Result<Gfx, Box<dyn std::error::Error>> {
+    unsafe fn new(window: &Window, reproject: bool, guard_ms: u64) -> Result<Gfx, Box<dyn std::error::Error>> {
         let entry = Entry::load()?;
         let display = window.display_handle()?.as_raw();
         let win = window.window_handle()?.as_raw();
@@ -292,7 +309,7 @@ impl Gfx {
             _entry: entry, instance, surface_loader, surface, phys, device, queue, queue_family, swapchain_loader,
             swapchain: vk::SwapchainKHR::null(), images: vec![], views: vec![], format: vk::Format::B8G8R8A8_UNORM,
             extent: vk::Extent2D { width: 1, height: 1 }, pool, cmd, image_available, render_done: vec![], in_flight,
-            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, last_delta_deg: 0.0,
+            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, fallbacks: 0, guard_ms, last_delta_deg: 0.0,
         };
         g.create_swapchain(window.inner_size())?;
         if reproject {
@@ -416,7 +433,7 @@ impl Gfx {
     }
 
     /// Blit each eye's SteamVR image into its half of the swapchain image.
-    unsafe fn record_blit(&mut self, cmd: vk::CommandBuffer, dst: vk::Image, eyes: [(vk::Image, u32, u32); 2]) {
+    unsafe fn record_blit(&mut self, cmd: vk::CommandBuffer, dst: vk::Image, eyes: [(vk::Image, u32, u32); 2], bounds: [[f32; 4]; 2]) {
         let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
         let to_dst = vk::ImageMemoryBarrier::default()
             .image(dst).subresource_range(range)
@@ -436,8 +453,11 @@ impl Gfx {
                 vk::DependencyFlags::empty(), &[], &[], &[to_src]);
             let layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1);
             let x0 = if eye == 0 { 0 } else { half };
+            let b = bounds[eye];
+            let (sx0, sx1) = ((b[0] * sw as f32).round() as i32, (b[2] * sw as f32).round() as i32);
+            let (sy0, sy1) = ((b[1] * sh as f32).round() as i32, (b[3] * sh as f32).round() as i32);
             let blit = vk::ImageBlit::default()
-                .src_subresource(layers).src_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: sw as i32, y: sh as i32, z: 1 }])
+                .src_subresource(layers).src_offsets([vk::Offset3D { x: sx0, y: sy0, z: 0 }, vk::Offset3D { x: sx1, y: sy1, z: 1 }])
                 .dst_subresource(layers).dst_offsets([vk::Offset3D { x: x0, y: 0, z: 0 }, vk::Offset3D { x: x0 + half, y: h, z: 1 }]);
             self.device.cmd_blit_image(cmd, img, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, dst, vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[blit], vk::Filter::LINEAR);
@@ -478,7 +498,7 @@ impl Gfx {
             None,
         )?;
         let layouts = [desc_layout];
-        let ranges = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::FRAGMENT).offset(0).size(64)];
+        let ranges = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::FRAGMENT).offset(0).size(80)];
         let layout = self.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts).push_constant_ranges(&ranges), None)?;
 
         let entry = CStr::from_bytes_with_nul(b"main\0")?;
@@ -540,11 +560,12 @@ impl Gfx {
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
         let (w, h) = (self.extent.width, self.extent.height);
         let half = w / 2;
-        let mut push = [0f32; 16];
+        let mut push = [0f32; 20];
         push[..12].copy_from_slice(&rows);
-        push[12..].copy_from_slice(&warp::FOV);
-        let bytes = std::slice::from_raw_parts(push.as_ptr() as *const u8, 64);
+        push[12..16].copy_from_slice(&warp::FOV);
         for eye in 0..2usize {
+            push[16..20].copy_from_slice(&e.bounds[eye]);
+            let bytes = std::slice::from_raw_parts(push.as_ptr() as *const u8, 80);
             let x = (eye as u32 * half) as i32;
             self.device.cmd_set_viewport(cmd, 0, &[vk::Viewport { x: x as f32, y: 0.0, width: half as f32, height: h as f32, min_depth: 0.0, max_depth: 1.0 }]);
             self.device.cmd_set_scissor(cmd, 0, &[vk::Rect2D { offset: vk::Offset2D { x, y: 0 }, extent: vk::Extent2D { width: half, height: h } }]);
@@ -559,6 +580,56 @@ impl Gfx {
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
         self.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::BOTTOM_OF_PIPE,
             vk::DependencyFlags::empty(), &[], &[], &[to_present]);
+    }
+
+    /// Debug: read one eye image back to the CPU and write it as raw RGBA (sRGB bytes) into `dir`.
+    unsafe fn dump_eye(&self, dir: &std::path::Path, eye: (vk::Image, u32, u32), index: u32) -> Result<(), Box<dyn std::error::Error>> {
+        let (img, full_w, full_h) = eye;
+        // Only the middle of the picture (where the gaze pointer is): keeps long captures small.
+        let (w, h) = (full_w.min(640), full_h.min(400));
+        let (x0, y0) = ((full_w - w) / 2, (full_h - h) / 2);
+        let size = (w as u64) * (h as u64) * 4;
+        let buf = self.device.create_buffer(&vk::BufferCreateInfo::default().size(size).usage(vk::BufferUsageFlags::TRANSFER_DST), None)?;
+        let reqs = self.device.get_buffer_memory_requirements(buf);
+        let want = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        let mt = (0..self.mem_props.memory_type_count)
+            .find(|&j| reqs.memory_type_bits & (1 << j) != 0 && self.mem_props.memory_types[j as usize].property_flags.contains(want))
+            .ok_or("no host-visible memory type")?;
+        let mem = self.device.allocate_memory(&vk::MemoryAllocateInfo::default().allocation_size(reqs.size).memory_type_index(mt), None)?;
+        self.device.bind_buffer_memory(buf, mem, 0)?;
+        let cb = self.device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default().command_pool(self.pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1),
+        )?[0];
+        self.device.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
+        let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+        let back = if self.warp.is_some() { vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL } else { vk::ImageLayout::TRANSFER_SRC_OPTIMAL };
+        let to_src = vk::ImageMemoryBarrier::default().image(img).subresource_range(range)
+            .old_layout(vk::ImageLayout::UNDEFINED).new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::MEMORY_WRITE).dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+        self.device.cmd_pipeline_barrier(cb, vk::PipelineStageFlags::ALL_COMMANDS, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &[to_src]);
+        let region = vk::BufferImageCopy::default()
+            .image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
+            .image_offset(vk::Offset3D { x: x0 as i32, y: y0 as i32, z: 0 })
+            .image_extent(vk::Extent3D { width: w, height: h, depth: 1 });
+        self.device.cmd_copy_image_to_buffer(cb, img, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, buf, &[region]);
+        let restore = vk::ImageMemoryBarrier::default().image(img).subresource_range(range)
+            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL).new_layout(back)
+            .src_access_mask(vk::AccessFlags::TRANSFER_READ).dst_access_mask(vk::AccessFlags::SHADER_READ);
+        self.device.cmd_pipeline_barrier(cb, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::ALL_COMMANDS, vk::DependencyFlags::empty(), &[], &[], &[restore]);
+        self.device.end_command_buffer(cb)?;
+        let fence = self.device.create_fence(&vk::FenceCreateInfo::default(), None)?;
+        let cbs = [cb];
+        self.device.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&cbs)], fence)?;
+        self.device.wait_for_fences(&[fence], true, u64::MAX)?;
+        let ptr = self.device.map_memory(mem, 0, size, vk::MemoryMapFlags::empty())? as *const u8;
+        let bytes = std::slice::from_raw_parts(ptr, size as usize);
+        std::fs::write(dir.join(format!("frame_{index:04}_{w}x{h}.rgba")), bytes)?;
+        self.device.unmap_memory(mem);
+        self.device.destroy_fence(fence, None);
+        self.device.free_command_buffers(self.pool, &cbs);
+        self.device.destroy_buffer(buf, None);
+        self.device.free_memory(mem, None);
+        Ok(())
     }
 
     /// Free destroyed sets, import the sets the latest PRESENT refers to, and return the two eye images (if any).
@@ -590,7 +661,8 @@ impl Gfx {
         // SteamVR calls Present when it has *submitted* the GPU work, not when it has finished, and nothing here waits on its
         // fences. Use a new frame only once it is a few ms old and otherwise show the previous, certainly complete one.
         let latest = sh.present?;
-        let p = if latest.at.elapsed() >= std::time::Duration::from_millis(4) { latest } else { sh.previous.unwrap_or(latest) };
+        let use_latest = latest.at.elapsed() >= std::time::Duration::from_millis(self.guard_ms);
+        let p = if use_latest { latest } else { sh.previous.unwrap_or(latest) };
         let mut out = [(vk::Image::null(), 0u32, 0u32); 2];
         let mut sets = [vk::DescriptorSet::null(); 2];
         for (i, (sid, idx)) in [p.left, p.right].into_iter().enumerate() {
@@ -612,7 +684,7 @@ impl Gfx {
             out[i] = (img.image, set.width, set.height);
             sets[i] = img.set;
         }
-        Some(Eyes { imgs: out, sets, render_q: p.render_q })
+        Some(Eyes { imgs: out, sets, render_q: p.render_q, bounds: p.bounds, frame: p.frame, slot: p.left, used_previous: !use_latest, age_ms: p.at.elapsed().as_secs_f32() * 1000.0 })
     }
 
     /// Import SteamVR's three swap textures. The parameters must match how SteamVR created the images (same format,
@@ -682,6 +754,33 @@ impl Gfx {
     unsafe fn draw(&mut self, t: f32, window: &Window, shared: &Mutex<Shared>, pose: &Mutex<tracking::PoseState>) -> Result<(), Box<dyn std::error::Error>> {
         self.device.wait_for_fences(&[self.in_flight], true, u64::MAX)?;
         let eyes = self.prepare_eyes(shared);
+        if eyes.is_none() && shared.lock().unwrap().connected {
+            self.fallbacks += 1;
+        }
+        if let (Some(dir), Some(e)) = (self.dump_dir.clone(), &eyes) {
+            // Debug: `touch DIR/trigger` dumps the next 30 left-eye frames as raw RGBA.
+            if self.dump_remaining == 0 && dir.join("trigger").exists() {
+                let _ = std::fs::remove_file(dir.join("trigger"));
+                self.dump_remaining = self.dump_count;
+                println!("dumping {} frames to {}", self.dump_count, dir.display());
+            }
+            if self.dump_remaining > 0 {
+                self.dump_remaining -= 1;
+                if let Err(err) = self.dump_eye(&dir, e.imgs[0], self.dump_index) {
+                    eprintln!("dump failed: {err}");
+                    self.dump_remaining = 0;
+                }
+                // One metadata row per dumped frame, so glitch frames can be explained.
+                let now_q = pose.lock().unwrap().q;
+                let delta = e.render_q.map(|rq| 2.0 * (rq[0] * now_q[0] + rq[1] * now_q[1] + rq[2] * now_q[2] + rq[3] * now_q[3]).abs().min(1.0).acos().to_degrees());
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("meta.csv")) {
+                    if self.dump_index == 0 { let _ = writeln!(f, "dump_index,steamvr_frame,left_set,left_slot,used_previous,age_ms,render_vs_now_deg"); }
+                    let _ = writeln!(f, "{},{},{},{},{},{:.1},{}", self.dump_index, e.frame, e.slot.0, e.slot.1, e.used_previous as u8, e.age_ms, delta.map(|d| format!("{d:.2}")).unwrap_or_default());
+                }
+                self.dump_index += 1;
+            }
+        }
         let (idx, _) = match self.swapchain_loader.acquire_next_image(self.swapchain, u64::MAX, self.image_available, vk::Fence::null()) {
             Ok(r) => r,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return self.create_swapchain(window.inner_size()),
@@ -721,7 +820,7 @@ impl Gfx {
                 if let Some(d) = delta { self.last_delta_deg = d; }
                 match rows {
                     Some(r) => self.record_warp(cmd, idx as usize, image, &e, r),
-                    None => self.record_blit(cmd, image, e.imgs),
+                    None => self.record_blit(cmd, image, e.imgs, e.bounds),
                 }
             }
             None => self.record_pattern(cmd, idx as usize, image, t),
@@ -782,6 +881,9 @@ struct App {
     shared: Arc<Mutex<Shared>>,
     last_monitor_check: Instant,
     reproject: bool,
+    guard_ms: u64,
+    dump_dir: Option<std::path::PathBuf>,
+    dump_count: u32,
     pose: Arc<Mutex<tracking::PoseState>>,
 }
 
@@ -803,7 +905,10 @@ impl ApplicationHandler for App {
         let window = el
             .create_window(Window::default_attributes().with_title("XREAL presenter").with_fullscreen(Some(Fullscreen::Borderless(chosen))))
             .expect("create window");
-        self.gfx = Some(unsafe { Gfx::new(&window, self.reproject) }.expect("vulkan init"));
+        let mut gfx = unsafe { Gfx::new(&window, self.reproject, self.guard_ms) }.expect("vulkan init");
+        gfx.dump_dir = self.dump_dir.clone();
+        gfx.dump_count = self.dump_count;
+        self.gfx = Some(gfx);
         self.window = Some(window);
     }
 
@@ -825,9 +930,9 @@ impl ApplicationHandler for App {
                     self.frames += 1;
                     if self.last_report.elapsed().as_secs_f32() >= 5.0 {
                         if g.reproject {
-                            println!("{:.1} fps, reprojection delta {:.2} deg", self.frames as f32 / self.last_report.elapsed().as_secs_f32(), g.last_delta_deg);
+                            println!("{:.1} fps, reprojection delta {:.2} deg, fallback frames {}", self.frames as f32 / self.last_report.elapsed().as_secs_f32(), g.last_delta_deg, g.fallbacks);
                         } else {
-                            println!("{:.1} fps", self.frames as f32 / self.last_report.elapsed().as_secs_f32());
+                            println!("{:.1} fps, fallback frames {}", self.frames as f32 / self.last_report.elapsed().as_secs_f32(), g.fallbacks);
                         }
                         self.frames = 0;
                         self.last_report = Instant::now();
@@ -860,12 +965,25 @@ impl ApplicationHandler for App {
 fn main() {
     let mut monitor_name = "DP-1".to_string();
     let mut reproject = false;
+    let mut guard_ms = 4u64;
+    let mut sim_pose = false;
+    let mut dump_count = 30u32;
+    let mut dump_dir: Option<std::path::PathBuf> = None;
+    if let Some(d) = &dump_dir { let _ = d; }
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         if a == "--monitor" {
             monitor_name = args.next().expect("--monitor needs a name");
         } else if a == "--reproject" {
             reproject = true;
+        } else if a == "--sim-pose" {
+            sim_pose = true;
+        } else if a == "--dump-frames" {
+            dump_count = args.next().and_then(|v| v.parse().ok()).expect("--dump-frames needs a number");
+        } else if a == "--dump" {
+            dump_dir = Some(std::path::PathBuf::from(args.next().expect("--dump needs a directory")));
+        } else if a == "--guard-ms" {
+            guard_ms = args.next().and_then(|v| v.parse().ok()).expect("--guard-ms needs a number");
         }
     }
     let el = EventLoop::new().expect("event loop");
@@ -873,8 +991,15 @@ fn main() {
     let shared = Arc::new(Mutex::new(Shared::default()));
     let pose = Arc::new(Mutex::new(tracking::PoseState::default()));
     let pose_for_app = pose.clone();
-    { let p = pose.clone(); std::thread::spawn(move || tracking::run(p)); }
+    if sim_pose {
+        println!("SIMULATED head sweep instead of the IMU");
+        let p = pose.clone();
+        std::thread::spawn(move || tracking::run_sim(p));
+    } else {
+        let p = pose.clone();
+        std::thread::spawn(move || tracking::run(p));
+    }
     { let (sh, p) = (shared.clone(), pose.clone()); std::thread::spawn(move || link_thread(sh, p)); }
-    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), reproject, pose: pose_for_app };
+    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), reproject, guard_ms, dump_dir, dump_count, pose: pose_for_app };
     el.run_app(&mut app).expect("run");
 }

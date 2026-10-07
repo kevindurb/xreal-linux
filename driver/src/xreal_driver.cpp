@@ -257,6 +257,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = byHandle_.find(handle);
         if (it == byHandle_.end()) return;
+        Log("DestroySwapTextureSet set %u (%ux%u)", it->second.first->id, it->second.first->desc.nWidth, it->second.first->desc.nHeight);
         DestroyLocked(it->second.first);
     }
 
@@ -292,6 +293,12 @@ public:
         if (presents_ <= 3 || presents_ % 300 == 0)
             Log("Present #%u layers=%d left set %u[%u] right set %u[%u]", presents_, layerCount_, setId[0],
                 index[0], setId[1], index[1]);
+        if (layerCount_ != lastLayerCount_ && layerChangeLogs_ < 300) {   // diagnostic: does the layer count change with UI activity?
+            layerChangeLogs_++;
+            Log("layers %d -> %d at Present #%u (sets %u/%u)", lastLayerCount_, layerCount_, presents_, setId[0], setId[1]);
+        }
+        lastLayerCount_ = layerCount_;
+        if (setId[0] == 0 || setId[1] == 0) Log("Present #%u: layer 0 refers to an unknown texture (left %u right %u)", presents_, setId[0], setId[1]);
         if (link_.Connected()) {
             ResyncIfNew();
             if (setId[0] && setId[1]) {
@@ -299,6 +306,21 @@ public:
                 float rq[4];
                 MatToQuat(layer0_[0].mHmdPose, rq);        // the head pose SteamVR rendered this frame for
                 for (int i = 0; i < 4; i++) memcpy(&m[6 + i], &rq[i], 4);
+                // Valid region of each eye's texture (SteamVR can render into a sub-rectangle when it lowers the resolution).
+                // Packed as four u16 (umin, vmin, umax, vmax; 0..65535) per eye in words 10-11 (left) and 12-13 (right).
+                bool partial = false;
+                for (int eye = 0; eye < 2; eye++) {
+                    const vr::VRTextureBounds_t &b = layer0_[eye].bounds;
+                    auto pack = [](float v) { v = v < 0 ? 0 : (v > 1 ? 1 : v); return (uint32_t)(v * 65535.0f + 0.5f); };
+                    m[10 + 2 * eye] = pack(b.uMin) | (pack(b.vMin) << 16);
+                    m[11 + 2 * eye] = pack(b.uMax) | (pack(b.vMax) << 16);
+                    if (fabsf(b.uMin) > 0.001f || fabsf(b.vMin) > 0.001f || fabsf(b.uMax - 1) > 0.001f || fabsf(b.vMax - 1) > 0.001f) partial = true;
+                }
+                if (partial && partialBoundsLogs_ < 200) {
+                    partialBoundsLogs_++;
+                    const vr::VRTextureBounds_t &l = layer0_[0].bounds, &r = layer0_[1].bounds;
+                    Log("Present #%u: PARTIAL bounds left u %.3f-%.3f v %.3f-%.3f right u %.3f-%.3f v %.3f-%.3f", presents_, l.uMin, l.uMax, l.vMin, l.vMax, r.uMin, r.uMax, r.vMin, r.vMax);
+                }
                 link_.Send(m);
             }
         }
@@ -395,6 +417,9 @@ private:
     int layerCount_ = 0;
     uint32_t presents_ = 0;
     uint32_t nextSetId_ = 1;
+    int lastLayerCount_ = -1;
+    int layerChangeLogs_ = 0;
+    int partialBoundsLogs_ = 0;
     PresenterLink link_;
     double pose_[4] = {1, 0, 0, 0};
     double omega_[3] = {0, 0, 0};
@@ -454,7 +479,14 @@ public:
         if (size >= 1) response[0] = 0;
     }
 
-    vr::DriverPose_t GetPose() override { return MakePose(false, nullptr, nullptr); }
+    // SteamVR may ask for the pose directly instead of using the streamed updates; it must get the latest tracked pose, not an
+    // untracked identity one (which showed up as a single frame rendered for the wrong view).
+    vr::DriverPose_t GetPose() override {
+        std::lock_guard<std::mutex> lock(poseMutex_);
+        int n = ++getPoseCalls_;
+        if (n <= 5 || n % 1000 == 0) Log("GetPose called by SteamVR (#%d), tracked pose available: %d", n, havePose_ ? 1 : 0);
+        return havePose_ ? lastPose_ : MakePose(false, nullptr, nullptr);
+    }
 
 private:
     vr::DriverPose_t MakePose(bool tracked, const double *q, const double *omega) {
@@ -485,7 +517,9 @@ private:
                 vr::VRServerDriverHost()->VsyncEvent(0.0);   // one per wake-up; a burst must not become back-to-back events
                 lastPresenterVsyncNs_ = NowNs();
             }
-            vr::VRServerDriverHost()->TrackedDevicePoseUpdated(id_, MakePose(tracked, q, omega), sizeof(vr::DriverPose_t));
+            vr::DriverPose_t pose = MakePose(tracked, q, omega);
+            if (tracked) { std::lock_guard<std::mutex> lock(poseMutex_); lastPose_ = pose; havePose_ = true; }
+            vr::VRServerDriverHost()->TrackedDevicePoseUpdated(id_, pose, sizeof(vr::DriverPose_t));
         }
     }
 
@@ -510,6 +544,10 @@ private:
     uint32_t id_ = vr::k_unTrackedDeviceIndexInvalid;
     std::atomic<bool> active_{false};
     std::atomic<int64_t> lastPresenterVsyncNs_{0};
+    std::mutex poseMutex_;
+    vr::DriverPose_t lastPose_ = {};
+    bool havePose_ = false;
+    int getPoseCalls_ = 0;
     std::thread pose_thread_, vsync_thread_;
 };
 
