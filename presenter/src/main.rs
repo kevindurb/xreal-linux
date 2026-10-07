@@ -810,6 +810,15 @@ impl Gfx {
                         break;
                     }
                 }
+                // Read the same images again after a pause: if a frame changes between the two reads, SteamVR was still drawing it.
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                for (k, tag) in ["L2", "R2"].into_iter().enumerate() {
+                    if let Err(err) = self.dump_eye(&dir, e.imgs[k], self.dump_index, tag) {
+                        eprintln!("dump failed: {err}");
+                        self.dump_remaining = 0;
+                        break;
+                    }
+                }
                 // One metadata row per dumped frame, so glitch frames can be explained.
                 let now_q = pose.lock().unwrap().q;
                 let delta = e.render_q.map(|rq| 2.0 * (rq[0] * now_q[0] + rq[1] * now_q[1] + rq[2] * now_q[2] + rq[3] * now_q[3]).abs().min(1.0).acos().to_degrees());
