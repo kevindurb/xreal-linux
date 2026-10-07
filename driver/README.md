@@ -51,7 +51,9 @@ Found while tuning on a Steam Deck. All are plain SteamVR settings, not driver c
   the glasses' vblank). Set false to compare.
 - `driver_xreal.seconds_from_vsync_to_photons`: overrides the advertised latency (default: the running start plus one refresh;
   the panel's own latency is not measured).
-- `steamvr.enableHomeApp`: Home is heavy; turning it off lets SteamVR idle, but then there is little to look at.
+- `steamvr.enableHomeApp`: Home is heavy (about 10 ms of GPU per frame on the Deck). With it off the frame rate and
+  responsiveness are much better, and `steamvr.background` can name one of SteamVR's own skies, e.g.
+  `<SteamVR>/resources/backgrounds/aurorasky.png`, drawn by the compositor instead.
 - `driver_xreal.head_height` (metres, default 1.5): the driver reports the head at this height in standing space, or the
   wearer appears to be in the floor.
 - Display layout: with the glasses as the only active display, every desktop window (Steam, SteamVR dialogs) lands on them

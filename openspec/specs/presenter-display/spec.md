@@ -100,9 +100,9 @@ The presenter SHALL listen on the abstract unix socket `@xreal-presenter-<uid>` 
 - **WHEN** a process of a different user connects to the socket
 - **THEN** the presenter rejects it
 
-### Requirement: Debug capture and fence inspection
+### Requirement: Debug capture of what the glasses show
 
-The presenter SHALL provide `--dump DIR` to write the centre crop of both eyes' source images with per-frame metadata on request (by creating `DIR/trigger`), waiting for the writer's dma-buf fence before reading each dumped frame.
+The presenter SHALL provide `--dump DIR` to write the centre crop of each eye's half of the displayed image, with per-frame metadata, on request (by creating `DIR/trigger`). The copy SHALL be part of the frame's own GPU submission and the files SHALL be written off the render thread, so capturing does not change the frame timing being captured.
 
 #### Scenario: Capturing a glitch
 

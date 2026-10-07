@@ -224,6 +224,17 @@ struct WarpPipe {
     pipeline: vk::Pipeline,
 }
 
+/// Debug capture of what the glasses show (the centre of each eye's half), copied by the frame's own submission so that
+/// capturing does not change the timing being captured.
+struct Capture {
+    buf: vk::Buffer,
+    mem: vk::DeviceMemory,
+    ptr: *const u8,
+    w: u32,
+    h: u32,
+    tx: std::sync::mpsc::Sender<(u32, Vec<u8>)>,
+}
+
 /// The two eye images to show, with what reprojection needs.
 struct Eyes {
     imgs: [(vk::Image, u32, u32); 2],
@@ -267,6 +278,8 @@ struct Gfx {
     dump_remaining: u32,
     dump_count: u32,
     dump_index: u32,
+    capture: Option<Capture>,
+    capture_pending: Option<u32>, // dump index copied by the submission in flight
     pub fallbacks: u32,  // frames drawn as the test pattern while the driver was connected (should stay 0)
     last_delta_deg: f32, // head rotation between SteamVR's render pose and now, last warped frame
     semaphore_fd: Option<khr::external_semaphore_fd::Device>, // None: the GPU cannot wait on sync files, so the CPU waits
@@ -275,6 +288,8 @@ struct Gfx {
     present_id: u64,              // id of our last present, 0 when there is none to wait for
     present_wait_timeouts: u32,   // consecutive timeouts; the compositor may not report presentation
     used_frame: Option<(RawFd, u32)>, // driver connection and SteamVR frame last reported as in use
+    pub new_frames: u32,          // SteamVR frames shown for the first time since the last report
+    pub new_frame_age_ms: (f32, f32), // sum and max of their age when picked up, since the last report
 }
 
 impl Gfx {
@@ -363,8 +378,9 @@ impl Gfx {
             _entry: entry, instance, surface_loader, surface, phys, device, queue, queue_family, swapchain_loader,
             swapchain: vk::SwapchainKHR::null(), images: vec![], views: vec![], format: vk::Format::B8G8R8A8_UNORM,
             extent: vk::Extent2D { width: 1, height: 1 }, pool, cmd, image_available, render_done: vec![], in_flight,
-            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, fallbacks: 0, last_delta_deg: 0.0,
+            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, capture: None, capture_pending: None, fallbacks: 0, last_delta_deg: 0.0,
             semaphore_fd, read_ready, present_wait, present_id: 0, present_wait_timeouts: 0, used_frame: None,
+            new_frames: 0, new_frame_age_ms: (0.0, 0.0),
         };
         g.create_swapchain(window.inner_size())?;
         if reproject {
@@ -406,7 +422,8 @@ impl Gfx {
                 .image_color_space(fmt.color_space)
                 .image_extent(self.extent)
                 .image_array_layers(1)
-                .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
+                .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST
+                    | (caps.supported_usage_flags & vk::ImageUsageFlags::TRANSFER_SRC))
                 .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .pre_transform(caps.current_transform)
                 .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -638,14 +655,11 @@ impl Gfx {
             vk::DependencyFlags::empty(), &[], &[], &[to_present]);
     }
 
-    /// Debug: read one eye image back to the CPU and write it as raw RGBA (sRGB bytes) into `dir`.
-    unsafe fn dump_eye(&self, dir: &std::path::Path, eye: (vk::Image, u32, u32), index: u32, tag: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let (img, full_w, full_h) = eye;
-        // Only the middle of the picture (where the gaze pointer is): keeps long captures small.
-        let (w, h) = (full_w.min(640), full_h.min(400));
-        let (x0, y0) = ((full_w - w) / 2, (full_h - h) / 2);
-        let size = (w as u64) * (h as u64) * 4;
-        let buf = self.device.create_buffer(&vk::BufferCreateInfo::default().size(size).usage(vk::BufferUsageFlags::TRANSFER_DST), None)?;
+    /// Persistently mapped buffer for both eyes' crops, and a thread that writes each captured frame as raw RGBA into `dir`.
+    unsafe fn create_capture(&self, dir: &std::path::Path) -> Result<Capture, Box<dyn std::error::Error>> {
+        let (w, h) = ((self.extent.width / 2).min(640), self.extent.height.min(400));
+        let eye_bytes = (w * h * 4) as usize;
+        let buf = self.device.create_buffer(&vk::BufferCreateInfo::default().size(2 * eye_bytes as u64).usage(vk::BufferUsageFlags::TRANSFER_DST), None)?;
         let reqs = self.device.get_buffer_memory_requirements(buf);
         let want = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
         let mt = (0..self.mem_props.memory_type_count)
@@ -653,39 +667,44 @@ impl Gfx {
             .ok_or("no host-visible memory type")?;
         let mem = self.device.allocate_memory(&vk::MemoryAllocateInfo::default().allocation_size(reqs.size).memory_type_index(mt), None)?;
         self.device.bind_buffer_memory(buf, mem, 0)?;
-        let cb = self.device.allocate_command_buffers(
-            &vk::CommandBufferAllocateInfo::default().command_pool(self.pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1),
-        )?[0];
-        self.device.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
+        let ptr = self.device.map_memory(mem, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *const u8;
+        let bgra = matches!(self.format, vk::Format::B8G8R8A8_SRGB | vk::Format::B8G8R8A8_UNORM);
+        let (tx, rx) = std::sync::mpsc::channel::<(u32, Vec<u8>)>();
+        let dir = dir.to_path_buf();
+        std::thread::spawn(move || {
+            for (index, mut bytes) in rx {
+                if bgra { for px in bytes.chunks_exact_mut(4) { px.swap(0, 2); } }
+                for (k, tag) in ["L", "R"].into_iter().enumerate() {
+                    if let Err(err) = std::fs::write(dir.join(format!("frame_{index:04}_{tag}_{w}x{h}.rgba")), &bytes[k * eye_bytes..(k + 1) * eye_bytes]) {
+                        eprintln!("capture write failed: {err}");
+                    }
+                }
+            }
+        });
+        Ok(Capture { buf, mem, ptr, w, h, tx })
+    }
+
+    /// Copy the centre of each eye's half of the finished swapchain image into the capture buffer.
+    unsafe fn record_capture(&self, cmd: vk::CommandBuffer, image: vk::Image) {
+        let Some(c) = &self.capture else { return };
         let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
-        let back = if self.warp.is_some() { vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL } else { vk::ImageLayout::TRANSFER_SRC_OPTIMAL };
-        let to_src = vk::ImageMemoryBarrier::default().image(img).subresource_range(range)
-            .old_layout(vk::ImageLayout::UNDEFINED).new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .src_access_mask(vk::AccessFlags::MEMORY_WRITE).dst_access_mask(vk::AccessFlags::TRANSFER_READ);
-        self.device.cmd_pipeline_barrier(cb, vk::PipelineStageFlags::ALL_COMMANDS, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &[to_src]);
-        let region = vk::BufferImageCopy::default()
+        let to_src = vk::ImageMemoryBarrier::default().image(image).subresource_range(range)
+            .old_layout(vk::ImageLayout::PRESENT_SRC_KHR).new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+        self.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &[to_src]);
+        let half = self.extent.width / 2;
+        let regions: Vec<vk::BufferImageCopy> = (0..2u32).map(|eye| vk::BufferImageCopy::default()
+            .buffer_offset((eye * c.w * c.h * 4) as u64)
             .image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
-            .image_offset(vk::Offset3D { x: x0 as i32, y: y0 as i32, z: 0 })
-            .image_extent(vk::Extent3D { width: w, height: h, depth: 1 });
-        self.device.cmd_copy_image_to_buffer(cb, img, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, buf, &[region]);
-        let restore = vk::ImageMemoryBarrier::default().image(img).subresource_range(range)
-            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL).new_layout(back)
-            .src_access_mask(vk::AccessFlags::TRANSFER_READ).dst_access_mask(vk::AccessFlags::SHADER_READ);
-        self.device.cmd_pipeline_barrier(cb, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::ALL_COMMANDS, vk::DependencyFlags::empty(), &[], &[], &[restore]);
-        self.device.end_command_buffer(cb)?;
-        let fence = self.device.create_fence(&vk::FenceCreateInfo::default(), None)?;
-        let cbs = [cb];
-        self.device.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&cbs)], fence)?;
-        self.device.wait_for_fences(&[fence], true, u64::MAX)?;
-        let ptr = self.device.map_memory(mem, 0, size, vk::MemoryMapFlags::empty())? as *const u8;
-        let bytes = std::slice::from_raw_parts(ptr, size as usize);
-        std::fs::write(dir.join(format!("frame_{index:04}_{tag}_{w}x{h}.rgba")), bytes)?;
-        self.device.unmap_memory(mem);
-        self.device.destroy_fence(fence, None);
-        self.device.free_command_buffers(self.pool, &cbs);
-        self.device.destroy_buffer(buf, None);
-        self.device.free_memory(mem, None);
-        Ok(())
+            .image_offset(vk::Offset3D { x: (eye * half + (half - c.w) / 2) as i32, y: ((self.extent.height - c.h) / 2) as i32, z: 0 })
+            .image_extent(vk::Extent3D { width: c.w, height: c.h, depth: 1 })).collect();
+        self.device.cmd_copy_image_to_buffer(cmd, image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, c.buf, &regions);
+        let back = vk::ImageMemoryBarrier::default().image(image).subresource_range(range)
+            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL).new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .src_access_mask(vk::AccessFlags::TRANSFER_READ);
+        self.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            vk::DependencyFlags::empty(), &[], &[], &[back]);
     }
 
     /// Free destroyed sets, import the sets the latest PRESENT refers to, and return the two eye images (if any).
@@ -742,6 +761,9 @@ impl Gfx {
         let fd = DRIVER_FD.load(Ordering::Relaxed);
         if fd >= 0 && self.used_frame != Some((fd, p.frame)) {
             self.used_frame = Some((fd, p.frame));
+            let age = p.at.elapsed().as_secs_f32() * 1000.0;
+            self.new_frames += 1;
+            self.new_frame_age_ms = (self.new_frame_age_ms.0 + age, self.new_frame_age_ms.1.max(age));
             let mut w = [0u32; 16];
             w[0] = 6;
             w[1] = p.frame;
@@ -850,6 +872,9 @@ impl Gfx {
     /// Draw one frame: the driver's eyes if it is presenting, otherwise the stereo test pattern.
     unsafe fn draw(&mut self, t: f32, window: &Window, shared: &Mutex<Shared>, pose: &Mutex<tracking::PoseState>) -> Result<(), Box<dyn std::error::Error>> {
         self.device.wait_for_fences(&[self.in_flight], true, u64::MAX)?;
+        if let (Some(index), Some(c)) = (self.capture_pending.take(), &self.capture) {
+            let _ = c.tx.send((index, std::slice::from_raw_parts(c.ptr, (2 * c.w * c.h * 4) as usize).to_vec()));
+        }
         // Waiting for our last frame to reach the display gives the vblank time and keeps only one frame queued.
         let mut vblank_ns = 0u64;
         let waited = match (&self.present_wait, self.present_id) {
@@ -879,25 +904,23 @@ impl Gfx {
         if eyes.is_none() && shared.lock().unwrap().connected {
             self.fallbacks += 1;
         }
+        let mut capture_index = None;
         if let (Some(dir), Some(e)) = (self.dump_dir.clone(), &eyes) {
-            // Debug: `touch DIR/trigger` dumps the next frames (both eyes, centre crop) as raw RGBA.
+            // Debug: `touch DIR/trigger` captures the next frames as shown on the glasses (both eyes, centre crop) as raw RGBA.
             if self.dump_remaining == 0 && dir.join("trigger").exists() {
                 let _ = std::fs::remove_file(dir.join("trigger"));
                 self.dump_remaining = self.dump_count;
-                println!("dumping {} frames to {}", self.dump_count, dir.display());
+                println!("capturing {} frames to {}", self.dump_count, dir.display());
+            }
+            if self.dump_remaining > 0 && self.capture.is_none() {
+                match self.create_capture(&dir) {
+                    Ok(c) => self.capture = Some(c),
+                    Err(err) => { eprintln!("capture setup failed: {err}"); self.dump_remaining = 0; }
+                }
             }
             if self.dump_remaining > 0 {
                 self.dump_remaining -= 1;
-                for fd in e.wait_fds.into_iter().filter(|&fd| fd >= 0) {
-                    sync_file_pending(fd, 25);
-                }
-                for (k, tag) in ["L", "R"].into_iter().enumerate() {
-                    if let Err(err) = self.dump_eye(&dir, e.imgs[k], self.dump_index, tag) {
-                        eprintln!("dump failed: {err}");
-                        self.dump_remaining = 0;
-                        break;
-                    }
-                }
+                capture_index = Some(self.dump_index);
                 // One metadata row per dumped frame, so glitch frames can be explained.
                 let now_q = pose.lock().unwrap().q;
                 let delta = e.render_q.map(|rq| 2.0 * (rq[0] * now_q[0] + rq[1] * now_q[1] + rq[2] * now_q[2] + rq[3] * now_q[3]).abs().min(1.0).acos().to_degrees());
@@ -955,6 +978,10 @@ impl Gfx {
             }
             None => self.record_pattern(cmd, idx as usize, image, t),
         }
+        if let Some(i) = capture_index {
+            self.record_capture(cmd, image);
+            self.capture_pending = Some(i);
+        }
         self.device.end_command_buffer(cmd)?;
 
         let signal = [self.render_done[idx as usize]];
@@ -990,6 +1017,10 @@ impl Drop for Gfx {
             self.device.destroy_fence(self.in_flight, None);
             self.device.destroy_semaphore(self.image_available, None);
             for s in self.read_ready { self.device.destroy_semaphore(s, None); }
+            if let Some(c) = self.capture.take() {
+                self.device.destroy_buffer(c.buf, None);
+                self.device.free_memory(c.mem, None);
+            }
             if let Some(w) = self.warp.take() {
                 self.device.destroy_pipeline(w.pipeline, None);
                 self.device.destroy_pipeline_layout(w.layout, None);
@@ -1063,10 +1094,14 @@ impl ApplicationHandler for App {
                     }
                     self.frames += 1;
                     if self.last_report.elapsed().as_secs_f32() >= 5.0 {
+                        let secs = self.last_report.elapsed().as_secs_f32();
+                        let mean_age = if g.new_frames > 0 { g.new_frame_age_ms.0 / g.new_frames as f32 } else { 0.0 };
+                        let newest = format!("{:.1} new SteamVR frames/s (age mean {:.1} max {:.1} ms)", g.new_frames as f32 / secs, mean_age, g.new_frame_age_ms.1);
+                        (g.new_frames, g.new_frame_age_ms) = (0, (0.0, 0.0));
                         if g.reproject {
-                            println!("{:.1} fps, reprojection delta {:.2} deg, fallback frames {}", self.frames as f32 / self.last_report.elapsed().as_secs_f32(), g.last_delta_deg, g.fallbacks);
+                            println!("{:.1} fps, {newest}, reprojection delta {:.2} deg, fallback frames {}", self.frames as f32 / secs, g.last_delta_deg, g.fallbacks);
                         } else {
-                            println!("{:.1} fps, fallback frames {}", self.frames as f32 / self.last_report.elapsed().as_secs_f32(), g.fallbacks);
+                            println!("{:.1} fps, {newest}, fallback frames {}", self.frames as f32 / secs, g.fallbacks);
                         }
                         self.frames = 0;
                         self.last_report = Instant::now();
