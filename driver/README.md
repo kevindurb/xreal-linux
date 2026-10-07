@@ -2,7 +2,8 @@
 
 A minimal SteamVR driver that presents itself as an HMD using **driver direct mode**, so SteamVR's compositor does not
 need a DRM lease of the display. It asks SteamVR for the per-eye swap textures (dma-bufs) and counts the frames SteamVR
-presents. It does not display anything yet and reports a fixed head pose.
+presents. It forwards the swap-texture fds and a message per presented frame to the presenter (see `presenter/`) over an
+abstract unix socket. It still reports a fixed head pose.
 
 Status: verified on SteamVR 2.17.10 on a Steam Deck (Plasma 6.7 Wayland). The compositor logs
 `Headset is using driver direct mode`, SteamVR Home renders into the driver's textures, and `Present` ticks at the
@@ -29,3 +30,9 @@ base image.
 
 and in `config/steamvr.vrsettings` set `steamvr.forcedDriver` to `xreal`, `requireHmd` to true and disable `driver_null`.
 Undo with `vrpathreg.sh removedriver /path/to/driver/xreal`.
+
+## Why an abstract socket
+
+SteamVR's `vrserver` runs inside Steam's pressure-vessel container with its own mount namespace, so it cannot see a socket
+file under `/run/user/<uid>`. An abstract unix socket (`@xreal-presenter-<uid>`) lives in the network namespace and is
+reachable from inside the container. The presenter checks `SO_PEERCRED` and only accepts the same user.

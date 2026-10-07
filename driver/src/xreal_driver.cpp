@@ -8,8 +8,13 @@
 // working implementation.
 #include "openvr_driver.h"
 
+#include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/uio.h>
+#include <sys/un.h>
 #include <unistd.h>
+
+#include <stddef.h>
 
 #include <atomic>
 #include <chrono>
@@ -37,6 +42,78 @@ static void Log(const char *fmt, ...) {
 // Vulkan values we need without including vulkan.h
 static const uint32_t kUsageTransferSrc = 0x1, kUsageSampled = 0x4, kUsageInputAttachment = 0x80;
 static const uint32_t kCreateMutableFormat = 0x8;
+static const uint32_t kUsageFlags = kUsageTransferSrc | kUsageSampled | kUsageInputAttachment;
+
+// ---- link to the presenter process ---------------------------------------------------------------
+// The presenter (see presenter/) owns the glasses' display. This driver sends it each swap-texture set's file
+// descriptors when SteamVR creates them, and a small message for every presented frame. Messages are fixed arrays of
+// 16 u32 words over a SOCK_SEQPACKET unix socket; file descriptors travel as SCM_RIGHTS.
+//   type 1 SET:     [1, set_id, width, height, vk_format, usage, create_flags]   + 3 fds
+//   type 2 DESTROY: [2, set_id]
+//   type 3 PRESENT: [3, left_set, left_index, right_set, right_index, frame_number]
+enum MsgType : uint32_t { kMsgSet = 1, kMsgDestroy = 2, kMsgPresent = 3 };
+
+class PresenterLink {
+public:
+    ~PresenterLink() { Close(); }
+
+    bool Connected() {
+        if (fd_ >= 0) return true;
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastTry_ < std::chrono::milliseconds(500)) return false;
+        lastTry_ = now;
+        int s = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+        if (s < 0) return false;
+        // An abstract socket (leading NUL) lives in the network namespace, not the filesystem, so it works from
+        // inside SteamVR's pressure-vessel container, which cannot see files under /run/user.
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        int n = snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, "xreal-presenter-%u", (unsigned)getuid());
+        socklen_t len = offsetof(sockaddr_un, sun_path) + 1 + n;
+        if (connect(s, (sockaddr *)&addr, len) != 0) { close(s); return false; }
+        fd_ = s;
+        justConnected_ = true;
+        Log("connected to presenter (abstract socket %s)", addr.sun_path + 1);
+        return true;
+    }
+
+    // True once after each new connection, so the owner can re-send everything it already created.
+    bool TakeJustConnected() { bool j = justConnected_; justConnected_ = false; return j; }
+
+    bool Send(const uint32_t (&words)[16], const int *fds = nullptr, int nfds = 0) {
+        if (fd_ < 0) return false;
+        iovec iov{(void *)words, sizeof(words)};
+        char ctl[CMSG_SPACE(sizeof(int) * 3)] = {};
+        msghdr mh{};
+        mh.msg_iov = &iov;
+        mh.msg_iovlen = 1;
+        if (nfds > 0) {
+            mh.msg_control = ctl;
+            mh.msg_controllen = CMSG_SPACE(sizeof(int) * nfds);
+            cmsghdr *c = CMSG_FIRSTHDR(&mh);
+            c->cmsg_level = SOL_SOCKET;
+            c->cmsg_type = SCM_RIGHTS;
+            c->cmsg_len = CMSG_LEN(sizeof(int) * nfds);
+            memcpy(CMSG_DATA(c), fds, sizeof(int) * nfds);
+        }
+        if (sendmsg(fd_, &mh, MSG_NOSIGNAL | MSG_DONTWAIT) != (ssize_t)sizeof(words)) {
+            Log("presenter link lost");
+            Close();
+            return false;
+        }
+        return true;
+    }
+
+    void Close() {
+        if (fd_ >= 0) close(fd_);
+        fd_ = -1;
+    }
+
+private:
+    int fd_ = -1;
+    bool justConnected_ = false;
+    std::chrono::steady_clock::time_point lastTry_{};
+};
 
 struct Settings {
     int renderWidth = 1920, renderHeight = 1080;  // per eye
@@ -130,8 +207,10 @@ public:
         }
         std::lock_guard<std::mutex> lock(mutex_);
         TextureSet *raw = set.release();
+        raw->id = nextSetId_++;
         for (int i = 0; i < 3; i++) byHandle_[raw->handles[i]] = {raw, i};
         sets_.push_back(raw);
+        if (link_.Connected()) SendSet(*raw);
     }
 
     void DestroySwapTextureSet(vr::SharedTextureHandle_t handle) override {
@@ -165,13 +244,21 @@ public:
     void Present(vr::SharedTextureHandle_t) override {
         std::lock_guard<std::mutex> lock(mutex_);
         presents_++;
-        if (presents_ <= 3 || presents_ % 300 == 0) {
-            int fds[2] = {-1, -1};
-            for (int eye = 0; eye < 2; eye++) {
-                auto it = byHandle_.find(layer0_[eye].hTexture);
-                if (it != byHandle_.end()) fds[eye] = it->second.first->fds[it->second.second];
+        uint32_t setId[2] = {0, 0}, index[2] = {0, 0};
+        for (int eye = 0; eye < 2; eye++) {
+            auto it = byHandle_.find(layer0_[eye].hTexture);
+            if (it != byHandle_.end()) { setId[eye] = it->second.first->id; index[eye] = it->second.second; }
+        }
+        if (presents_ <= 3 || presents_ % 300 == 0)
+            Log("Present #%u layers=%d left set %u[%u] right set %u[%u]", presents_, layerCount_, setId[0],
+                index[0], setId[1], index[1]);
+        if (link_.Connected()) {
+            if (link_.TakeJustConnected())
+                for (auto *s : sets_) SendSet(*s);          // a presenter that started later needs everything
+            if (setId[0] && setId[1]) {
+                uint32_t m[16] = {kMsgPresent, setId[0], index[0], setId[1], index[1], presents_};
+                link_.Send(m);
             }
-            Log("Present #%u layers=%d left fd=%d right fd=%d", presents_, layerCount_, fds[0], fds[1]);
         }
         layerCount_ = 0;
     }
@@ -188,6 +275,7 @@ public:
 
 private:
     struct TextureSet {
+        uint32_t id = 0;
         uint32_t pid = 0;
         SwapTextureSetDesc_t desc{};
         vr::SharedTextureHandle_t handles[3] = {0, 0, 0};
@@ -202,7 +290,13 @@ private:
         }
     }
 
+    void SendSet(const TextureSet &s) {
+        uint32_t m[16] = {kMsgSet, s.id, s.desc.nWidth, s.desc.nHeight, s.desc.nFormat, kUsageFlags, kCreateMutableFormat};
+        link_.Send(m, s.fds, 3);
+    }
+
     void DestroyLocked(TextureSet *set) {
+        if (link_.Connected()) { uint32_t m[16] = {kMsgDestroy, set->id}; link_.Send(m); }
         for (int i = 0; i < 3; i++) byHandle_.erase(set->handles[i]);
         for (size_t i = 0; i < sets_.size(); i++)
             if (sets_[i] == set) { sets_.erase(sets_.begin() + i); break; }
@@ -223,6 +317,8 @@ private:
     SubmitLayerPerEye_t layer0_[2]{};
     int layerCount_ = 0;
     uint32_t presents_ = 0;
+    uint32_t nextSetId_ = 1;
+    PresenterLink link_;
 };
 
 // ---- the headset ------------------------------------------------------------------------------
