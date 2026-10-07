@@ -8,6 +8,7 @@
 // working implementation.
 #include "openvr_driver.h"
 
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -16,6 +17,7 @@
 
 #include <stddef.h>
 
+#include <cerrno>
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
@@ -56,6 +58,8 @@ enum MsgType : uint32_t { kMsgSet = 1, kMsgDestroy = 2, kMsgPresent = 3 };
 class PresenterLink {
 public:
     ~PresenterLink() { Close(); }
+
+    int Fd() const { return fd_; }
 
     bool Connected() {
         if (fd_ >= 0) return true;
@@ -104,6 +108,17 @@ public:
         return true;
     }
 
+    // 1: a message was read into words, 0: nothing waiting, -1: the connection is gone.
+    int Recv(uint32_t (&words)[16]) {
+        if (fd_ < 0) return -1;
+        ssize_t n = recv(fd_, words, sizeof(words), MSG_DONTWAIT);
+        if (n == (ssize_t)sizeof(words)) return 1;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+        Log("presenter link closed");
+        Close();
+        return -1;
+    }
+
     void Close() {
         if (fd_ >= 0) close(fd_);
         fd_ = -1;
@@ -120,6 +135,7 @@ struct Settings {
     int windowWidth = 3840, windowHeight = 1080;  // both eyes side by side on the glasses
     float refreshHz = 60.f;
     float ipd = 0.063f;
+    float headHeight = 1.5f;  // metres above the floor in SteamVR's standing space
     std::string serial = "XREAL-PROTOTYPE-0001";
     std::string model = "XREAL 1S";
 
@@ -137,8 +153,12 @@ struct Settings {
         vr::EVRSettingsError e;
         float hz = s->GetFloat("driver_xreal", "display_frequency", &e);
         if (e == vr::VRSettingsError_None && hz > 0) refreshHz = hz;
+        float h = s->GetFloat("driver_xreal", "head_height", &e);
+        if (e == vr::VRSettingsError_None) headHeight = h;
     }
 };
+
+static float BitsToFloat(uint32_t b) { float f; memcpy(&f, &b, 4); return f; }
 
 // ---- display geometry --------------------------------------------------------------------------
 class DisplayComponent : public vr::IVRDisplayComponent {
@@ -253,8 +273,7 @@ public:
             Log("Present #%u layers=%d left set %u[%u] right set %u[%u]", presents_, layerCount_, setId[0],
                 index[0], setId[1], index[1]);
         if (link_.Connected()) {
-            if (link_.TakeJustConnected())
-                for (auto *s : sets_) SendSet(*s);          // a presenter that started later needs everything
+            ResyncIfNew();
             if (setId[0] && setId[1]) {
                 uint32_t m[16] = {kMsgPresent, setId[0], index[0], setId[1], index[1], presents_};
                 link_.Send(m);
@@ -264,6 +283,35 @@ public:
     }
 
     void PostPresent(const Throttling_t *) override {}
+
+    // Wait up to timeoutMs for the presenter, then read everything it sent. Fills the latest head orientation (w, x, y, z)
+    // and world angular velocity, and counts the vsync notifications received. Returns true if the pose is valid.
+    bool PollMessages(double q[4], double omega[3], int &vsyncs, int timeoutMs) {
+        vsyncs = 0;
+        int fd;
+        { std::lock_guard<std::mutex> lock(mutex_); fd = link_.Connected() ? link_.Fd() : -1; }
+        if (fd < 0) { std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs)); return false; }
+        pollfd pfd{fd, POLLIN, 0};
+        poll(&pfd, 1, timeoutMs);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!link_.Connected()) return false;
+        ResyncIfNew();
+        uint32_t w[16];
+        int r;
+        while ((r = link_.Recv(w)) > 0) {
+            if (w[0] == 4) {
+                for (int i = 0; i < 4; i++) pose_[i] = BitsToFloat(w[3 + i]);
+                for (int i = 0; i < 3; i++) omega_[i] = BitsToFloat(w[8 + i]);
+                poseValid_ = w[7] != 0;
+            } else if (w[0] == 5) {
+                vsyncs++;
+            }
+        }
+        if (r < 0) poseValid_ = false;
+        for (int i = 0; i < 4; i++) q[i] = pose_[i];
+        for (int i = 0; i < 3; i++) omega[i] = omega_[i];
+        return poseValid_;
+    }
 
     void GetFrameTiming(vr::DriverDirectMode_FrameTiming *t) override {
         t->m_nSize = sizeof(vr::DriverDirectMode_FrameTiming);
@@ -288,6 +336,12 @@ private:
             if (set.fds[i] >= 0) { close(set.fds[i]); set.fds[i] = -1; }
             if (set.handles[i]) { vr::VRIPCResourceManager()->UnrefResource(set.handles[i]); set.handles[i] = 0; }
         }
+    }
+
+    // A presenter that started later (or restarted) needs every existing set again.
+    void ResyncIfNew() {
+        if (link_.TakeJustConnected())
+            for (auto *s : sets_) SendSet(*s);
     }
 
     void SendSet(const TextureSet &s) {
@@ -319,6 +373,9 @@ private:
     uint32_t presents_ = 0;
     uint32_t nextSetId_ = 1;
     PresenterLink link_;
+    double pose_[4] = {1, 0, 0, 0};
+    double omega_[3] = {0, 0, 0};
+    bool poseValid_ = false;
 };
 
 // ---- the headset ------------------------------------------------------------------------------
@@ -374,33 +431,53 @@ public:
         if (size >= 1) response[0] = 0;
     }
 
-    vr::DriverPose_t GetPose() override {
+    vr::DriverPose_t GetPose() override { return MakePose(false, nullptr, nullptr); }
+
+private:
+    vr::DriverPose_t MakePose(bool tracked, const double *q, const double *omega) {
         vr::DriverPose_t pose = {};
         pose.qWorldFromDriverRotation.w = 1.f;
         pose.qDriverFromHeadRotation.w = 1.f;
-        pose.qRotation.w = 1.f;          // fixed orientation for now; IMU fusion comes later
+        pose.qRotation.w = 1.f;          // identity until the presenter provides a tracked orientation
+        pose.vecPosition[1] = settings_.headHeight;
+        if (tracked) {
+            pose.qRotation.w = q[0]; pose.qRotation.x = q[1]; pose.qRotation.y = q[2]; pose.qRotation.z = q[3];
+            for (int i = 0; i < 3; i++) pose.vecAngularVelocity[i] = omega[i];   // lets SteamVR predict ahead
+            pose.shouldApplyHeadModel = true;   // lets SteamVR add the small head/neck translation from rotation
+        }
         pose.poseIsValid = true;
         pose.deviceIsConnected = true;
         pose.result = vr::TrackingResult_Running_OK;
-        pose.shouldApplyHeadModel = false;
         return pose;
     }
 
-private:
+    // Reports the pose to SteamVR whenever the presenter sends one, and turns the presenter's vblank notifications
+    // into vsync events. Waiting on the socket (not a timer) keeps SteamVR's frame clock locked to the real display.
     void PoseLoop() {
         while (active_) {
-            vr::VRServerDriverHost()->TrackedDevicePoseUpdated(id_, GetPose(), sizeof(vr::DriverPose_t));
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            double q[4], omega[3];
+            int vsyncs = 0;
+            bool tracked = direct_->PollMessages(q, omega, vsyncs, 2);
+            if (vsyncs > 0) {
+                vr::VRServerDriverHost()->VsyncEvent(0.0);   // one per wake-up; a burst must not become back-to-back events
+                lastPresenterVsyncNs_ = NowNs();
+            }
+            vr::VRServerDriverHost()->TrackedDevicePoseUpdated(id_, MakePose(tracked, q, omega), sizeof(vr::DriverPose_t));
         }
     }
 
+    static int64_t NowNs() {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    // Fallback clock: only fires while the presenter is not supplying vsync (not running, or not yet connected).
     void VsyncLoop() {
         auto period = std::chrono::duration<double>(1.0 / settings_.refreshHz);
         auto next = std::chrono::steady_clock::now();
         while (active_) {
             next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
             std::this_thread::sleep_until(next);
-            vr::VRServerDriverHost()->VsyncEvent(0.0);
+            if (NowNs() - lastPresenterVsyncNs_ > 100'000'000) vr::VRServerDriverHost()->VsyncEvent(0.0);
         }
     }
 
@@ -409,6 +486,7 @@ private:
     std::unique_ptr<DirectModeComponent> direct_;
     uint32_t id_ = vr::k_unTrackedDeviceIndexInvalid;
     std::atomic<bool> active_{false};
+    std::atomic<int64_t> lastPresenterVsyncNs_{0};
     std::thread pose_thread_, vsync_thread_;
 };
 

@@ -10,11 +10,14 @@
 //! each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
 //! float at a different depth from the frame. White borders and a white centre line show the exact edges.
 
+mod tracking;
+
 use ash::{khr, vk, Device, Entry, Instance};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::fd::RawFd;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -22,6 +25,9 @@ use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Fullscreen, Window, WindowId};
+
+/// fd of the connection to the driver (or -1); lets the render thread send vsync messages.
+static DRIVER_FD: AtomicI32 = AtomicI32::new(-1);
 
 // ---- link to the SteamVR driver -------------------------------------------------------------------------------
 // The driver (driver/src/xreal_driver.cpp) connects to a SOCK_SEQPACKET unix socket and sends fixed 16-word messages:
@@ -49,6 +55,7 @@ struct PresentMsg {
     left: (u32, u32),
     right: (u32, u32),
     frame: u32,
+    at: Instant,
 }
 
 #[derive(Default)]
@@ -56,10 +63,11 @@ struct Shared {
     sets: HashMap<u32, SetInfo>,
     destroyed: Vec<u32>,
     present: Option<PresentMsg>,
+    previous: Option<PresentMsg>, // the frame before `present`, which is certain to be complete
     connected: bool,
 }
 
-fn link_thread(shared: Arc<Mutex<Shared>>) {
+fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>) {
     unsafe {
         // Abstract socket (leading NUL): visible from SteamVR's pressure-vessel container, unlike a file path.
         let name = format!("xreal-presenter-{}", libc::getuid());
@@ -92,7 +100,25 @@ fn link_thread(shared: Arc<Mutex<Shared>>) {
                 continue;
             }
             println!("driver connected (pid {})", cred.pid);
+            DRIVER_FD.store(c, Ordering::Relaxed);
             shared.lock().unwrap().connected = true;
+            // Stream the head pose to the driver (type 4: [4, ts_lo, ts_hi, w, x, y, z as f32 bits, valid, wx, wy, wz as f32 bits]).
+            let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            {
+                let (alive, pose) = (alive.clone(), pose.clone());
+                std::thread::spawn(move || {
+                    while alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        let p = *pose.lock().unwrap();
+                        let w: [u32; 16] = [4, p.timestamp_ns as u32, (p.timestamp_ns >> 32) as u32, p.q[0].to_bits(), p.q[1].to_bits(),
+                                            p.q[2].to_bits(), p.q[3].to_bits(), p.valid as u32, p.omega[0].to_bits(), p.omega[1].to_bits(), p.omega[2].to_bits(), 0, 0, 0, 0, 0];
+                        let n = unsafe { libc::send(c, w.as_ptr() as *const _, 64, libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT) };
+                        if n < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock {
+                            break;
+                        }
+                    }
+                });
+            }
             loop {
                 let mut words = [0u32; 16];
                 let mut ctl = [0u64; 8]; // aligned control buffer
@@ -131,7 +157,10 @@ fn link_thread(shared: Arc<Mutex<Shared>>) {
                         );
                     }
                     2 => sh.destroyed.push(words[1]),
-                    3 => sh.present = Some(PresentMsg { left: (words[1], words[2]), right: (words[3], words[4]), frame: words[5] }),
+                    3 => {
+                        sh.previous = sh.present;
+                        sh.present = Some(PresentMsg { left: (words[1], words[2]), right: (words[3], words[4]), frame: words[5], at: Instant::now() });
+                    }
                     _ => {
                         for fd in fds {
                             libc::close(fd);
@@ -139,12 +168,15 @@ fn link_thread(shared: Arc<Mutex<Shared>>) {
                     }
                 }
             }
+            alive.store(false, std::sync::atomic::Ordering::Relaxed);
+            DRIVER_FD.store(-1, Ordering::Relaxed);
             libc::close(c);
             println!("driver disconnected");
             let mut sh = shared.lock().unwrap();
             let ids: Vec<u32> = sh.sets.keys().copied().collect();
             sh.destroyed.extend(ids);
             sh.present = None;
+            sh.previous = None;
             sh.connected = false;
         }
     }
@@ -172,6 +204,7 @@ struct Gfx {
     in_flight: vk::Fence,
     mem_props: vk::PhysicalDeviceMemoryProperties,
     seen: std::collections::HashSet<vk::Image>, // imported images we have already transitioned once
+    vsync_seq: u32,
 }
 
 impl Gfx {
@@ -234,7 +267,7 @@ impl Gfx {
             _entry: entry, instance, surface_loader, surface, phys, device, queue, queue_family, swapchain_loader,
             swapchain: vk::SwapchainKHR::null(), images: vec![], views: vec![], format: vk::Format::B8G8R8A8_UNORM,
             extent: vk::Extent2D { width: 1, height: 1 }, pool, cmd, image_available, render_done: vec![], in_flight,
-            mem_props, seen: Default::default(),
+            mem_props, seen: Default::default(), vsync_seq: 0,
         };
         g.create_swapchain(window.inner_size())?;
         Ok(g)
@@ -410,7 +443,10 @@ impl Gfx {
                 }
             }
         }
-        let p = sh.present?;
+        // SteamVR calls Present when it has *submitted* the GPU work, not when it has finished, and nothing here waits on its
+        // fences. Use a new frame only once it is a few ms old and otherwise show the previous, certainly complete one.
+        let latest = sh.present?;
+        let p = if latest.at.elapsed() >= std::time::Duration::from_millis(4) { latest } else { sh.previous.unwrap_or(latest) };
         let mut out = [(vk::Image::null(), 0u32, 0u32); 2];
         for (i, (sid, idx)) in [p.left, p.right].into_iter().enumerate() {
             let set = sh.sets.get_mut(&sid)?;
@@ -487,6 +523,16 @@ impl Gfx {
             Err(e) => return Err(e.into()),
         };
         self.device.reset_fences(&[self.in_flight])?;
+        // acquire returns when the display has taken the previous frame, so this is our best estimate of a vblank: tell the
+        // driver, which turns it into SteamVR's vsync event (type 5: [5, sequence]).
+        let fd = DRIVER_FD.load(Ordering::Relaxed);
+        if fd >= 0 {
+            self.vsync_seq = self.vsync_seq.wrapping_add(1);
+            let mut w = [0u32; 16];
+            w[0] = 5;
+            w[1] = self.vsync_seq;
+            libc::send(fd, w.as_ptr() as *const _, 64, libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT);
+        }
         let cmd = self.cmd;
         self.device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
         self.device.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
@@ -611,7 +657,9 @@ fn main() {
     let el = EventLoop::new().expect("event loop");
     el.set_control_flow(ControlFlow::Poll);
     let shared = Arc::new(Mutex::new(Shared::default()));
-    { let sh = shared.clone(); std::thread::spawn(move || link_thread(sh)); }
+    let pose = Arc::new(Mutex::new(tracking::PoseState::default()));
+    { let p = pose.clone(); std::thread::spawn(move || tracking::run(p)); }
+    { let (sh, p) = (shared.clone(), pose.clone()); std::thread::spawn(move || link_thread(sh, p)); }
     let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared };
     el.run_app(&mut app).expect("run");
 }

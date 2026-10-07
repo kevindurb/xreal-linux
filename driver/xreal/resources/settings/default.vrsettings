@@ -5,6 +5,7 @@
 		"render_height": 1080,
 		"window_width": 3840,
 		"window_height": 1080,
-		"display_frequency": 60.0
+		"display_frequency": 60.0,
+		"head_height": 1.5
 	}
 }
