@@ -20,14 +20,16 @@ No UVC camera and no `/dev/video*` node appears for the Eye. IMU data is not exp
 
 ## Display
 
-The glasses show up as a DRM connector whose mode list depends on the mode the glasses are in.
+The glasses show up as a DRM connector whose mode list depends on the aspect-ratio mode the glasses are set to. The
+glasses can act as a 16:9 monitor, a 16:10 monitor, or one of a few ultrawide monitors, and the EDID changes with the
+setting.
 
-- **Side-by-side mode** (first session): a single mode, `3840x1080` (two 1920x1080 eyes side by side). Its refresh rate
-  was not recorded.
-- **2D mode** (later session, EDID decoded; manufacturer `MRG`, product `0x4102`, name `XREAL 1S`): six detailed timings,
-  `1920x1200` and `1920x1080`, each at 60, 90 and 120 Hz.
-- The glasses switch between these (the README of an upstream driver says holding the brightness-up button enables
-  side-by-side), and the EDID changes with it. Whether the SBS mode also offers 90 or 120 Hz has not been checked.
+- **Ultrawide mode** (first session): a single mode, `3840x1080`. That is a **32:9 ultrawide monitor**, not a
+  stereo side-by-side image (an earlier version of these notes got this wrong). Its refresh rate was not recorded.
+- **16:10 / 16:9 mode** (later session, EDID decoded; manufacturer `MRG`, product `0x4102`, name `XREAL 1S`): six
+  detailed timings, `1920x1200` and `1920x1080`, each at 60, 90 and 120 Hz.
+- A genuine stereo side-by-side mode is a separate feature (an upstream driver README says holding the brightness-up
+  button enables it). It has not been observed here, so its modes and refresh rates are unknown.
 - Whether the connector carries the DRM `non-desktop` property was not determined. The EDID decoded here has no
   obvious VR/headset block.
 
@@ -49,8 +51,24 @@ TCP ports **52990-52999** are open on both addresses. What each did when connect
 |---|---|
 | 52998 | Streams IMU records immediately (below) |
 | 52997 | Streams large camera frames immediately (below) |
-| 52996 | Streams small records, magic `27 31 00 00 00 20`, containing a counter and timestamp. Possibly camera metadata, unconfirmed |
-| 52999, 52990-52995 | Accept the connection, send nothing within 3-4 s. Possibly control channels, unconfirmed and untested |
+| 52996 | Streams 38-byte timestamp/counter records at 120 Hz (below). No pose data |
+| 52999 | Sends a few short status-like messages (below), at least on connect. Not observed to carry pose |
+| 52990-52995 | Accept the connection and sent nothing in 25 s of recording. Possibly control channels, unconfirmed and untested |
+
+### Port 52996: timestamps
+
+Records are 38 bytes: magic `27 31 00 00 00 20`, a u64 timestamp at offset 14, a u16 counter at offset 22 that goes up
+by exactly 1 every record, and zeros elsewhere. In a 25 s recording there were 2997 records, about **120 Hz and exactly two
+per camera frame**. The timestamps are on the **same nanosecond clock as the IMU and the camera frame headers**, which
+makes this stream (and the camera header timestamp at offset 23) useful for aligning camera frames with IMU samples.
+During a recording with the wearer yawing, nodding and leaning, no pose or motion payload appeared here, so it is not
+an on-glasses 6DoF pose. What exactly each record marks (exposure start, a per-eye trigger, etc.) is unconfirmed.
+
+### Port 52999: status messages
+
+Five messages in 25 s, each starting `27 8a 00 00 00` followed by a type byte (`07` or `09`), a few small fields and a
+trailing float32 with values 43.9, 54.5, 54.8, 60.0 and 61.0. These look like temperature-type readings, but that is a
+guess. Earlier 3-4 s reads saw nothing, so these may be sent only occasionally.
 
 ## Port 52998: IMU
 

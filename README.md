@@ -7,7 +7,7 @@ Status: **exploration / reverse engineering**. Nothing here is a finished driver
 
 | Piece | Status |
 |---|---|
-| Video (DisplayPort over USB-C) | Works as a plain monitor. 2D mode: 1920x1200 / 1920x1080 at 60, 90 and 120 Hz. Side-by-side mode: 3840x1080 |
+| Video (DisplayPort over USB-C) | Works as a plain monitor in several aspect modes: 16:10 (1920x1200) and 16:9 (1920x1080) at 60, 90 and 120 Hz, and ultrawide (e.g. 3840x1080, 32:9) |
 | Audio | Works (standard USB audio class) |
 | Buttons | Work (HID mouse / consumer control) |
 | Head tracking, 3DoF (IMU) | Protocol decoded, already implemented upstream (see below). Not yet run end to end on the 1S |
