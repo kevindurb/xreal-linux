@@ -137,6 +137,8 @@ struct Settings {
     float refreshHz = 60.f;
     float ipd = 0.063f;
     float headHeight = 1.5f;  // metres above the floor in SteamVR's standing space
+    bool sendAngularVelocity = true;  // lets SteamVR predict ahead; settable for diagnosing glitches
+    bool headModel = true;            // lets SteamVR add head/neck translation from rotation
     std::string serial = "XREAL-PROTOTYPE-0001";
     std::string model = "XREAL 1S";
 
@@ -156,6 +158,10 @@ struct Settings {
         if (e == vr::VRSettingsError_None && hz > 0) refreshHz = hz;
         float h = s->GetFloat("driver_xreal", "head_height", &e);
         if (e == vr::VRSettingsError_None) headHeight = h;
+        bool b = s->GetBool("driver_xreal", "send_angular_velocity", &e);
+        if (e == vr::VRSettingsError_None) sendAngularVelocity = b;
+        b = s->GetBool("driver_xreal", "head_model", &e);
+        if (e == vr::VRSettingsError_None) headModel = b;
     }
 };
 
@@ -452,8 +458,8 @@ public:
         p->SetBoolProperty(c, vr::Prop_HasDisplayComponent_Bool, true);
         p->SetBoolProperty(c, vr::Prop_HasDriverDirectModeComponent_Bool, true);
         p->SetBoolProperty(c, vr::Prop_DriverDirectModeSendsVsyncEvents_Bool, true);
-        Log("HMD activated as device %u (%dx%d per eye, %.1f Hz, direct mode)", id, settings_.renderWidth,
-            settings_.renderHeight, settings_.refreshHz);
+        Log("HMD activated as device %u (%dx%d per eye, %.1f Hz, direct mode; angular velocity %s, head model %s)", id, settings_.renderWidth,
+            settings_.renderHeight, settings_.refreshHz, settings_.sendAngularVelocity ? "on" : "off", settings_.headModel ? "on" : "off");
         pose_thread_ = std::thread([this] { PoseLoop(); });
         vsync_thread_ = std::thread([this] { VsyncLoop(); });
         return vr::VRInitError_None;
@@ -497,8 +503,8 @@ private:
         pose.vecPosition[1] = settings_.headHeight;
         if (tracked) {
             pose.qRotation.w = q[0]; pose.qRotation.x = q[1]; pose.qRotation.y = q[2]; pose.qRotation.z = q[3];
-            for (int i = 0; i < 3; i++) pose.vecAngularVelocity[i] = omega[i];   // lets SteamVR predict ahead
-            pose.shouldApplyHeadModel = true;   // lets SteamVR add the small head/neck translation from rotation
+            if (settings_.sendAngularVelocity) for (int i = 0; i < 3; i++) pose.vecAngularVelocity[i] = omega[i];   // lets SteamVR predict ahead
+            pose.shouldApplyHeadModel = settings_.headModel;   // lets SteamVR add the small head/neck translation from rotation
         }
         pose.poseIsValid = true;
         pose.deviceIsConnected = true;

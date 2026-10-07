@@ -4,7 +4,7 @@
 //! glasses really show a different image to each eye in their SBS mode. It will grow into the thing that imports
 //! SteamVR's per-eye textures and presents them.
 //!
-//! usage: xreal-presenter [--monitor NAME] [--reproject] [--guard-ms N] [--sim-pose] [--dump DIR]      (default monitor name: DP-1)
+//! usage: xreal-presenter [--monitor NAME] [--reproject] [--guard-ms N] [--wait-fences] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default monitor name: DP-1)
 //!
 //! Left half of the screen = left eye (red tint), right half = right eye (blue tint). A green square slides across
 //! each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
@@ -26,6 +26,25 @@ use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Fullscreen, Window, WindowId};
+
+/// Ask the kernel whether the GPU work that writes this dma-buf has finished (DMA_BUF_IOCTL_EXPORT_SYNC_FILE).
+/// Returns (supported, still_pending_after_waiting, milliseconds_waited). `timeout_ms` of 0 only checks.
+fn fence_state(dmabuf_fd: RawFd, timeout_ms: i32) -> (bool, bool, f32) {
+    #[repr(C)]
+    struct ExportSyncFile { flags: u32, fd: i32 }
+    const DMA_BUF_IOCTL_EXPORT_SYNC_FILE: libc::c_ulong = 0xC008_6202; // _IOWR('b', 2, struct dma_buf_export_sync_file)
+    let mut req = ExportSyncFile { flags: 1, fd: -1 }; // DMA_BUF_SYNC_READ: wait for the writers
+    unsafe {
+        if libc::ioctl(dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &mut req) != 0 || req.fd < 0 {
+            return (false, false, 0.0);
+        }
+        let t = Instant::now();
+        let mut p = libc::pollfd { fd: req.fd, events: libc::POLLIN, revents: 0 };
+        let r = libc::poll(&mut p, 1, timeout_ms);
+        libc::close(req.fd);
+        (true, r == 0, t.elapsed().as_secs_f32() * 1000.0)
+    }
+}
 
 /// fd of the connection to the driver (or -1); lets the render thread send vsync messages.
 static DRIVER_FD: AtomicI32 = AtomicI32::new(-1);
@@ -50,6 +69,7 @@ struct SetInfo {
     usage: u32,
     flags: u32,
     fds: [RawFd; 3],
+    sync_fds: [RawFd; 3],               // our own dups of the dma-buf fds, used only to ask the kernel about the writer's fences
     images: Option<Vec<ImportedImage>>, // imported lazily, on first use
 }
 
@@ -158,7 +178,7 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
                         sh.sets.insert(
                             words[1],
                             SetInfo { width: words[2], height: words[3], format: words[4], usage: words[5], flags: words[6],
-                                      fds: [fds[0], fds[1], fds[2]], images: None },
+                                      fds: [fds[0], fds[1], fds[2]], sync_fds: [libc::dup(fds[0]), libc::dup(fds[1]), libc::dup(fds[2])], images: None },
                         );
                     }
                     2 => sh.destroyed.push(words[1]),
@@ -213,6 +233,9 @@ struct Eyes {
     slot: (u32, u32),      // left eye (set id, index)
     used_previous: bool,   // the frame-age guard picked the previous frame
     age_ms: f32,           // how old the chosen frame was
+    fence_supported: bool, // the kernel could export the writer's fence
+    fence_pending: bool,   // the writer had not finished when we looked (after any wait)
+    fence_ms: f32,         // how long we waited for it
 }
 
 struct Gfx {
@@ -244,6 +267,7 @@ struct Gfx {
     dump_remaining: u32,
     dump_count: u32,
     dump_index: u32,
+    wait_fences: bool,
     pub fallbacks: u32,  // frames drawn as the test pattern while the driver was connected (should stay 0)
     guard_ms: u64,       // how old a presented frame must be before we show it
     last_delta_deg: f32, // head rotation between SteamVR's render pose and now, last warped frame
@@ -309,7 +333,7 @@ impl Gfx {
             _entry: entry, instance, surface_loader, surface, phys, device, queue, queue_family, swapchain_loader,
             swapchain: vk::SwapchainKHR::null(), images: vec![], views: vec![], format: vk::Format::B8G8R8A8_UNORM,
             extent: vk::Extent2D { width: 1, height: 1 }, pool, cmd, image_available, render_done: vec![], in_flight,
-            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, fallbacks: 0, guard_ms, last_delta_deg: 0.0,
+            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, wait_fences: false, fallbacks: 0, guard_ms, last_delta_deg: 0.0,
         };
         g.create_swapchain(window.inner_size())?;
         if reproject {
@@ -583,7 +607,7 @@ impl Gfx {
     }
 
     /// Debug: read one eye image back to the CPU and write it as raw RGBA (sRGB bytes) into `dir`.
-    unsafe fn dump_eye(&self, dir: &std::path::Path, eye: (vk::Image, u32, u32), index: u32) -> Result<(), Box<dyn std::error::Error>> {
+    unsafe fn dump_eye(&self, dir: &std::path::Path, eye: (vk::Image, u32, u32), index: u32, tag: &str) -> Result<(), Box<dyn std::error::Error>> {
         let (img, full_w, full_h) = eye;
         // Only the middle of the picture (where the gaze pointer is): keeps long captures small.
         let (w, h) = (full_w.min(640), full_h.min(400));
@@ -623,7 +647,7 @@ impl Gfx {
         self.device.wait_for_fences(&[fence], true, u64::MAX)?;
         let ptr = self.device.map_memory(mem, 0, size, vk::MemoryMapFlags::empty())? as *const u8;
         let bytes = std::slice::from_raw_parts(ptr, size as usize);
-        std::fs::write(dir.join(format!("frame_{index:04}_{w}x{h}.rgba")), bytes)?;
+        std::fs::write(dir.join(format!("frame_{index:04}_{tag}_{w}x{h}.rgba")), bytes)?;
         self.device.unmap_memory(mem);
         self.device.destroy_fence(fence, None);
         self.device.free_command_buffers(self.pool, &cbs);
@@ -638,6 +662,7 @@ impl Gfx {
         let sh = &mut *guard;
         for id in sh.destroyed.drain(..) {
             if let Some(set) = sh.sets.remove(&id) {
+                for fd in set.sync_fds { libc::close(fd); }
                 match set.images {
                     Some(imgs) => {
                         for im in imgs {
@@ -684,7 +709,19 @@ impl Gfx {
             out[i] = (img.image, set.width, set.height);
             sets[i] = img.set;
         }
-        Some(Eyes { imgs: out, sets, render_q: p.render_q, bounds: p.bounds, frame: p.frame, slot: p.left, used_previous: !use_latest, age_ms: p.at.elapsed().as_secs_f32() * 1000.0 })
+        // Is the GPU work that wrote these two images finished? With --wait-fences, wait for it (up to 25 ms).
+        let (mut fence_supported, mut fence_pending, mut fence_ms) = (false, false, 0.0f32);
+        if self.wait_fences || self.dump_dir.is_some() {
+            for (sid, idx) in [p.left, p.right] {
+                if let Some(set) = sh.sets.get(&sid) {
+                    let (sup, pend, ms) = fence_state(set.sync_fds[idx as usize], if self.wait_fences { 25 } else { 0 });
+                    fence_supported |= sup;
+                    fence_pending |= pend;
+                    fence_ms += ms;
+                }
+            }
+        }
+        Some(Eyes { imgs: out, sets, render_q: p.render_q, bounds: p.bounds, frame: p.frame, slot: p.left, used_previous: !use_latest, age_ms: p.at.elapsed().as_secs_f32() * 1000.0, fence_supported, fence_pending, fence_ms })
     }
 
     /// Import SteamVR's three swap textures. The parameters must match how SteamVR created the images (same format,
@@ -758,7 +795,7 @@ impl Gfx {
             self.fallbacks += 1;
         }
         if let (Some(dir), Some(e)) = (self.dump_dir.clone(), &eyes) {
-            // Debug: `touch DIR/trigger` dumps the next 30 left-eye frames as raw RGBA.
+            // Debug: `touch DIR/trigger` dumps the next frames (both eyes, centre crop) as raw RGBA.
             if self.dump_remaining == 0 && dir.join("trigger").exists() {
                 let _ = std::fs::remove_file(dir.join("trigger"));
                 self.dump_remaining = self.dump_count;
@@ -766,17 +803,20 @@ impl Gfx {
             }
             if self.dump_remaining > 0 {
                 self.dump_remaining -= 1;
-                if let Err(err) = self.dump_eye(&dir, e.imgs[0], self.dump_index) {
-                    eprintln!("dump failed: {err}");
-                    self.dump_remaining = 0;
+                for (k, tag) in ["L", "R"].into_iter().enumerate() {
+                    if let Err(err) = self.dump_eye(&dir, e.imgs[k], self.dump_index, tag) {
+                        eprintln!("dump failed: {err}");
+                        self.dump_remaining = 0;
+                        break;
+                    }
                 }
                 // One metadata row per dumped frame, so glitch frames can be explained.
                 let now_q = pose.lock().unwrap().q;
                 let delta = e.render_q.map(|rq| 2.0 * (rq[0] * now_q[0] + rq[1] * now_q[1] + rq[2] * now_q[2] + rq[3] * now_q[3]).abs().min(1.0).acos().to_degrees());
                 use std::io::Write;
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("meta.csv")) {
-                    if self.dump_index == 0 { let _ = writeln!(f, "dump_index,steamvr_frame,left_set,left_slot,used_previous,age_ms,render_vs_now_deg"); }
-                    let _ = writeln!(f, "{},{},{},{},{},{:.1},{}", self.dump_index, e.frame, e.slot.0, e.slot.1, e.used_previous as u8, e.age_ms, delta.map(|d| format!("{d:.2}")).unwrap_or_default());
+                    if self.dump_index == 0 { let _ = writeln!(f, "dump_index,steamvr_frame,left_set,left_slot,used_previous,age_ms,render_vs_now_deg,fence_supported,fence_pending,fence_ms"); }
+                    let _ = writeln!(f, "{},{},{},{},{},{:.1},{},{},{},{:.2}", self.dump_index, e.frame, e.slot.0, e.slot.1, e.used_previous as u8, e.age_ms, delta.map(|d| format!("{d:.2}")).unwrap_or_default(), e.fence_supported as u8, e.fence_pending as u8, e.fence_ms);
                 }
                 self.dump_index += 1;
             }
@@ -884,6 +924,7 @@ struct App {
     guard_ms: u64,
     dump_dir: Option<std::path::PathBuf>,
     dump_count: u32,
+    wait_fences: bool,
     pose: Arc<Mutex<tracking::PoseState>>,
 }
 
@@ -908,6 +949,7 @@ impl ApplicationHandler for App {
         let mut gfx = unsafe { Gfx::new(&window, self.reproject, self.guard_ms) }.expect("vulkan init");
         gfx.dump_dir = self.dump_dir.clone();
         gfx.dump_count = self.dump_count;
+        gfx.wait_fences = self.wait_fences;
         self.gfx = Some(gfx);
         self.window = Some(window);
     }
@@ -967,6 +1009,10 @@ fn main() {
     let mut reproject = false;
     let mut guard_ms = 4u64;
     let mut sim_pose = false;
+    let mut sim_yaw = 25.0f64;
+    let mut sim_pitch = 0.0f64;
+    let mut sim_pitch_amp = 12.0f64;
+    let mut wait_fences = false;
     let mut dump_count = 30u32;
     let mut dump_dir: Option<std::path::PathBuf> = None;
     if let Some(d) = &dump_dir { let _ = d; }
@@ -978,6 +1024,14 @@ fn main() {
             reproject = true;
         } else if a == "--sim-pose" {
             sim_pose = true;
+        } else if a == "--sim-pitch" {
+            sim_pitch = args.next().and_then(|v| v.parse().ok()).expect("--sim-pitch needs degrees");
+        } else if a == "--sim-pitch-amp" {
+            sim_pitch_amp = args.next().and_then(|v| v.parse().ok()).expect("--sim-pitch-amp needs degrees");
+        } else if a == "--wait-fences" {
+            wait_fences = true;
+        } else if a == "--sim-yaw" {
+            sim_yaw = args.next().and_then(|v| v.parse().ok()).expect("--sim-yaw needs degrees");
         } else if a == "--dump-frames" {
             dump_count = args.next().and_then(|v| v.parse().ok()).expect("--dump-frames needs a number");
         } else if a == "--dump" {
@@ -994,12 +1048,12 @@ fn main() {
     if sim_pose {
         println!("SIMULATED head sweep instead of the IMU");
         let p = pose.clone();
-        std::thread::spawn(move || tracking::run_sim(p));
+        std::thread::spawn(move || tracking::run_sim(p, sim_yaw, sim_pitch, sim_pitch_amp));
     } else {
         let p = pose.clone();
         std::thread::spawn(move || tracking::run(p));
     }
     { let (sh, p) = (shared.clone(), pose.clone()); std::thread::spawn(move || link_thread(sh, p)); }
-    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), reproject, guard_ms, dump_dir, dump_count, pose: pose_for_app };
+    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), reproject, guard_ms, dump_dir, dump_count, wait_fences, pose: pose_for_app };
     el.run_app(&mut app).expect("run");
 }

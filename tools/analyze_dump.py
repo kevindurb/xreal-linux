@@ -11,7 +11,7 @@ import sys
 
 import numpy as np
 
-files = sorted(glob.glob(sys.argv[1].rstrip("/") + "/frame_*.rgba"))
+files = sorted(glob.glob(sys.argv[1].rstrip("/") + "/frame_*_L_*.rgba")) or sorted(glob.glob(sys.argv[1].rstrip("/") + "/frame_*.rgba"))
 if not files:
     sys.exit("no frames")
 w, h = map(int, re.search(r"_(\d+)x(\d+)\.rgba", files[0]).groups())

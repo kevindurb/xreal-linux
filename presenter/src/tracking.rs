@@ -192,16 +192,18 @@ pub fn parse_records(buf: &mut Vec<u8>) -> Vec<(u64, [f32; 3], [f32; 3])> {
 }
 
 /// Debug: replace the IMU with a slow synthetic head sweep so SteamVR's gaze pointer crosses the UI without anyone wearing the
-/// glasses. Yaw +-25 degrees over 10 s and pitch +-12 degrees over 7 s.
-pub fn run_sim(pose: Arc<Mutex<PoseState>>) {
+/// glasses. Yaw +-`yaw_amplitude_deg` over a 16 s period and pitch +-12 degrees over 7 s.
+pub fn run_sim(pose: Arc<Mutex<PoseState>>, yaw_amplitude_deg: f64, pitch_offset_deg: f64, pitch_amplitude_deg: f64) {
     let start = std::time::Instant::now();
     let mut prev: Quat = [1.0, 0.0, 0.0, 0.0];
     let mut prev_t = 0.0f64;
     loop {
         std::thread::sleep(Duration::from_millis(2));
         let t = start.elapsed().as_secs_f64();
-        let yaw = 25f64.to_radians() * (2.0 * std::f64::consts::PI * t / 10.0).sin();
-        let pitch = 12f64.to_radians() * (2.0 * std::f64::consts::PI * t / 7.0).sin();
+        // Positive yaw is a turn to the left. 16 s period: left extreme at 4 s, right extreme at 12 s.
+        let yaw = yaw_amplitude_deg.to_radians() * (2.0 * std::f64::consts::PI * t / 16.0).sin();
+        // pitch_offset_deg is a constant tilt (negative looks down); the amplitude adds a slow nod on top.
+        let pitch = pitch_offset_deg.to_radians() + pitch_amplitude_deg.to_radians() * (2.0 * std::f64::consts::PI * t / 7.0).sin();
         let qy = [(yaw / 2.0).cos(), 0.0, (yaw / 2.0).sin(), 0.0];
         let qp = [(pitch / 2.0).cos(), (pitch / 2.0).sin(), 0.0, 0.0];
         let q = qmul(qy, qp);
