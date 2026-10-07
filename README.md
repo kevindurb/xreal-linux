@@ -7,13 +7,21 @@ Status: **exploration / reverse engineering**. Nothing here is a finished driver
 
 | Piece | Status |
 |---|---|
-| Video (DisplayPort over USB-C) | Works as a plain monitor, single mode 3840x1080 (side-by-side stereo) |
+| Video (DisplayPort over USB-C) | Works as a plain monitor. 2D mode: 1920x1200 / 1920x1080 at 60, 90 and 120 Hz. Side-by-side mode: 3840x1080 |
 | Audio | Works (standard USB audio class) |
 | Buttons | Work (HID mouse / consumer control) |
 | Head tracking, 3DoF (IMU) | Protocol decoded, already implemented upstream (see below). Not yet run end to end on the 1S |
 | Eye camera | Stream found and partly decoded, format not fully understood |
 | 6DoF / SLAM | Not started |
 | SteamVR / OpenXR integration | Not started |
+
+## Goal
+
+Make the glasses usable as a SteamVR-style headset on Linux, starting on a Steam Deck and working on any Linux gaming PC.
+It should work in two tiers, so people without the XREAL Eye still benefit:
+
+- **3DoF (rotation only), IMU only.** Works with the glasses alone.
+- **6DoF (rotation and position), IMU plus the Eye camera.** An optional upgrade when the camera is present.
 
 See [docs/findings.md](docs/findings.md) for the details and [docs/open-questions.md](docs/open-questions.md)
 for what is unverified.

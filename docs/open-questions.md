@@ -2,7 +2,9 @@
 
 ## Unverified
 
-- Whether XRLinuxDriver or `xreal_one_driver` work with the 1S's USB ID (`3318:043e`).
+- Whether XRLinuxDriver actually works on this 1S. Its source lists the ID (`3318:043e`), but it has not been run here.
+- Whether the glasses' connector has the DRM `non-desktop` property, and which refresh rates side-by-side mode offers.
+- Whether SteamVR can drive the glasses as its headset display on this Deck (SteamVR is not installed yet).
 - Yaw sign has no independent (accelerometer) check. Axes, units and the pitch/roll signs are measured, see
   [findings.md](findings.md); a repeat run, ideally by another wearer and with the on-glasses stabilizer state noted,
   would firm it up.

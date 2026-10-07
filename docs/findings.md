@@ -20,7 +20,16 @@ No UVC camera and no `/dev/video*` node appears for the Eye. IMU data is not exp
 
 ## Display
 
-The glasses show up as a DRM connector with a single mode, `3840x1080` (two 1920x1080 eyes side by side).
+The glasses show up as a DRM connector whose mode list depends on the mode the glasses are in.
+
+- **Side-by-side mode** (first session): a single mode, `3840x1080` (two 1920x1080 eyes side by side). Its refresh rate
+  was not recorded.
+- **2D mode** (later session, EDID decoded; manufacturer `MRG`, product `0x4102`, name `XREAL 1S`): six detailed timings,
+  `1920x1200` and `1920x1080`, each at 60, 90 and 120 Hz.
+- The glasses switch between these (the README of an upstream driver says holding the brightness-up button enables
+  side-by-side), and the EDID changes with it. Whether the SBS mode also offers 90 or 120 Hz has not been checked.
+- Whether the connector carries the DRM `non-desktop` property was not determined. The EDID decoded here has no
+  obvious VR/headset block.
 
 ## Network interfaces
 
@@ -104,8 +113,10 @@ moved to a pose, held still, then returned to centre, and the page integrated th
 - [wheaney/xrealOneDeviceKit](https://github.com/wheaney/xrealOneDeviceKit): wraps that driver for xrDeviceKit.
 - [wheaney/XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) and Breezy Desktop: 3DoF only. The docs list
   One, One Pro and 1S as supported, with the stabilizer/anchor features disabled on the glasses and the latest
-  firmware. A summary of its source listed USB PIDs `0x0437` and `0x0438` for the One, which does not include the
-  1S's `0x043e`. This was not checked in the source.
+  firmware. Its `src/devices/xreal.c` lists USB vendor `0x3318` with product IDs `0x043e` and `0x043d` as the 1S (and
+  `0x0437`/`0x0438` as the One, `0x0435`/`0x0436` as the One Pro), and opens One-series devices through
+  `device_imu_open_xreal_one()`. So this glasses' ID (`0x043e`) is recognised. An earlier note here claiming otherwise
+  came from a faulty page summary and was wrong. That it actually tracks correctly on this unit has not been tested.
 - XREAL's SDK 3.1 documents 6DoF with the Eye on Android hosts only. There is no Linux support.
 - No public work on ports 52996, 52997 or 52990-52995 or on the Eye's stream format was found. The search was not
   exhaustive and some pages (Monado merge requests) could not be read.
