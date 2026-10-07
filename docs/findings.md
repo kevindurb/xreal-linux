@@ -241,3 +241,19 @@ So the current mode can be **detected from the DRM mode list or EDID** with no p
 - **The Stabilizer state cannot be read from the control channel.** Three toggles (off, on, off) produced identical-looking
   port 52999 sequences (`2e` bursts, one `12` message, a 12-message `2e` kind-03 burst); the only varying bytes are an
   increasing counter. A setup flow has to ask the user to set it.
+
+## Idle soak test and SteamVR behaviour on the Deck (2026-10-07)
+
+With the glasses sitting still for 10 minutes while SteamVR Home ran at 1280x720 per eye:
+
+- **Gyro bias is stable:** mean per 30 s window on X moved from -0.00666 to -0.00605 rad/s (about 0.03 deg/s over 10 minutes), Y stayed within
+  0.0001 of -0.00055 and Z within 0.0001 of -0.00025. Noise was about 0.002 rad/s (0.1 deg/s) per axis at 1 kHz. The X bias drift went with
+  slowly rising sensor temperatures (the 52999 heartbeat floats, about +0.6 C on one sensor over the first 3 minutes), so expect some bias
+  movement while the glasses warm up; tracking the bias whenever the head is still handles it.
+- **No standby events and a perfectly steady 60 Hz** (exactly 300 `Present` calls per 5.0 s for the whole run) once SteamVR's
+  `power.turnOffScreensTimeout` (default 5 s) and `power.pauseCompositorOnStandby` were overridden.
+- **The GPU is the bottleneck, not our code.** With SteamVR Home the Deck's GPU reads about 95% busy even with the head still
+  (`steamtours` at over 100% CPU), at 1280x720 per eye; at the 1920x1080 SteamVR asked for it was pinned at 100%.
+- **Rotational reprojection** (presenter `--reproject`, shaders in `presenter/shaders`) runs on the Deck: the head pose SteamVR rendered
+  each frame for (taken from the layer's `mHmdPose`) and our own fused pose agree to 0.00-0.04 degrees while the glasses are at rest, which
+  confirms the pose conversion end to end. The visual result has not been checked yet.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start/stop the XREAL VR session on the Deck: the presenter (owns the glasses' display and the IMU) and SteamVR.
-#   vr_session.sh start | stop | status | log
+#   vr_session.sh start | stop | status | log      (XREAL_REPROJECT=1 vr_session.sh start enables reprojection)
 # The glasses must already be in full SBS (a single 3840x1080 mode), follow mode, Stabilizer off.
 set -uo pipefail
 export XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0
@@ -21,9 +21,11 @@ case "${1:-status}" in
       echo "glasses are not in full SBS (modes: ${modes:-none}); switch them first" >&2; exit 1
     fi
     stop; sleep 3; rm -f "$LOG"
+    ARGS="--monitor DP-1"
+    [ "${XREAL_REPROJECT:-0}" = 1 ] && ARGS="$ARGS --reproject"   # rotational reprojection (experimental)
     systemd-run --user --unit=xreal-presenter --description="XREAL presenter" -p RuntimeMaxSec=14400 \
       --setenv=XDG_RUNTIME_DIR --setenv=WAYLAND_DISPLAY --setenv=RUST_BACKTRACE=1 \
-      -p StandardOutput=file:$LOG -p StandardError=file:$LOG "$BIN" --monitor DP-1 >/dev/null
+      -p StandardOutput=file:$LOG -p StandardError=file:$LOG "$BIN" $ARGS >/dev/null
     sleep 3
     steam steam://run/250820 >/tmp/steamvr_launch.log 2>&1 &
     echo "started; 'vr_session.sh status' in ~30 s" ;;

@@ -18,6 +18,7 @@
 #include <stddef.h>
 
 #include <cerrno>
+#include <math.h>
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
@@ -160,6 +161,25 @@ struct Settings {
 
 static float BitsToFloat(uint32_t b) { float f; memcpy(&f, &b, 4); return f; }
 
+// Rotation part of a 3x4 pose matrix as a unit quaternion (w, x, y, z).
+static void MatToQuat(const vr::HmdMatrix34_t &a, float q[4]) {
+    const float (*m)[4] = a.m;
+    float t = m[0][0] + m[1][1] + m[2][2];
+    if (t > 0) {
+        float s = 0.5f / sqrtf(t + 1.0f);
+        q[0] = 0.25f / s; q[1] = (m[2][1] - m[1][2]) * s; q[2] = (m[0][2] - m[2][0]) * s; q[3] = (m[1][0] - m[0][1]) * s;
+    } else if (m[0][0] > m[1][1] && m[0][0] > m[2][2]) {
+        float s = 2.0f * sqrtf(1.0f + m[0][0] - m[1][1] - m[2][2]);
+        q[0] = (m[2][1] - m[1][2]) / s; q[1] = 0.25f * s; q[2] = (m[0][1] + m[1][0]) / s; q[3] = (m[0][2] + m[2][0]) / s;
+    } else if (m[1][1] > m[2][2]) {
+        float s = 2.0f * sqrtf(1.0f + m[1][1] - m[0][0] - m[2][2]);
+        q[0] = (m[0][2] - m[2][0]) / s; q[1] = (m[0][1] + m[1][0]) / s; q[2] = 0.25f * s; q[3] = (m[1][2] + m[2][1]) / s;
+    } else {
+        float s = 2.0f * sqrtf(1.0f + m[2][2] - m[0][0] - m[1][1]);
+        q[0] = (m[1][0] - m[0][1]) / s; q[1] = (m[0][2] + m[2][0]) / s; q[2] = (m[1][2] + m[2][1]) / s; q[3] = 0.25f * s;
+    }
+}
+
 // ---- display geometry --------------------------------------------------------------------------
 class DisplayComponent : public vr::IVRDisplayComponent {
 public:
@@ -276,6 +296,9 @@ public:
             ResyncIfNew();
             if (setId[0] && setId[1]) {
                 uint32_t m[16] = {kMsgPresent, setId[0], index[0], setId[1], index[1], presents_};
+                float rq[4];
+                MatToQuat(layer0_[0].mHmdPose, rq);        // the head pose SteamVR rendered this frame for
+                for (int i = 0; i < 4; i++) memcpy(&m[6 + i], &rq[i], 4);
                 link_.Send(m);
             }
         }

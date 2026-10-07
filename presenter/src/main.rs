@@ -4,13 +4,14 @@
 //! glasses really show a different image to each eye in their SBS mode. It will grow into the thing that imports
 //! SteamVR's per-eye textures and presents them.
 //!
-//! usage: xreal-presenter [--monitor NAME]      (default monitor name: DP-1)
+//! usage: xreal-presenter [--monitor NAME] [--reproject]      (default monitor name: DP-1)
 //!
 //! Left half of the screen = left eye (red tint), right half = right eye (blue tint). A green square slides across
 //! each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
 //! float at a different depth from the frame. White borders and a white centre line show the exact edges.
 
 mod tracking;
+mod warp;
 
 use ash::{khr, vk, Device, Entry, Instance};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -33,11 +34,13 @@ static DRIVER_FD: AtomicI32 = AtomicI32::new(-1);
 // The driver (driver/src/xreal_driver.cpp) connects to a SOCK_SEQPACKET unix socket and sends fixed 16-word messages:
 //   1 SET     [1, set_id, width, height, vk_format, usage, create_flags] + 3 fds (SCM_RIGHTS)
 //   2 DESTROY [2, set_id]
-//   3 PRESENT [3, left_set, left_index, right_set, right_index, frame_number]
+//   3 PRESENT [3, left_set, left_index, right_set, right_index, frame_number, render_qw, qx, qy, qz as f32 bits]
 
 struct ImportedImage {
     image: vk::Image,
     memory: vk::DeviceMemory,
+    view: vk::ImageView,      // only with --reproject
+    set: vk::DescriptorSet,   // only with --reproject
 }
 
 struct SetInfo {
@@ -56,6 +59,7 @@ struct PresentMsg {
     right: (u32, u32),
     frame: u32,
     at: Instant,
+    render_q: Option<[f32; 4]>, // head orientation SteamVR rendered this frame for (w, x, y, z)
 }
 
 #[derive(Default)]
@@ -159,7 +163,9 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
                     2 => sh.destroyed.push(words[1]),
                     3 => {
                         sh.previous = sh.present;
-                        sh.present = Some(PresentMsg { left: (words[1], words[2]), right: (words[3], words[4]), frame: words[5], at: Instant::now() });
+                        let q = [f32::from_bits(words[6]), f32::from_bits(words[7]), f32::from_bits(words[8]), f32::from_bits(words[9])];
+                        let render_q = if q.iter().all(|v| v.is_finite()) && q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3] > 0.5 { Some(q) } else { None };
+                        sh.present = Some(PresentMsg { left: (words[1], words[2]), right: (words[3], words[4]), frame: words[5], at: Instant::now(), render_q });
                     }
                     _ => {
                         for fd in fds {
@@ -180,6 +186,22 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
             sh.connected = false;
         }
     }
+}
+
+/// Everything the reprojection pass needs (created only with --reproject).
+struct WarpPipe {
+    sampler: vk::Sampler,
+    desc_layout: vk::DescriptorSetLayout,
+    pool: vk::DescriptorPool,
+    layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+}
+
+/// The two eye images to show, with what reprojection needs.
+struct Eyes {
+    imgs: [(vk::Image, u32, u32); 2],
+    sets: [vk::DescriptorSet; 2],
+    render_q: Option<[f32; 4]>,
 }
 
 struct Gfx {
@@ -205,10 +227,13 @@ struct Gfx {
     mem_props: vk::PhysicalDeviceMemoryProperties,
     seen: std::collections::HashSet<vk::Image>, // imported images we have already transitioned once
     vsync_seq: u32,
+    warp: Option<WarpPipe>,
+    reproject: bool,
+    last_delta_deg: f32, // head rotation between SteamVR's render pose and now, last warped frame
 }
 
 impl Gfx {
-    unsafe fn new(window: &Window) -> Result<Gfx, Box<dyn std::error::Error>> {
+    unsafe fn new(window: &Window, reproject: bool) -> Result<Gfx, Box<dyn std::error::Error>> {
         let entry = Entry::load()?;
         let display = window.display_handle()?.as_raw();
         let win = window.window_handle()?.as_raw();
@@ -267,9 +292,13 @@ impl Gfx {
             _entry: entry, instance, surface_loader, surface, phys, device, queue, queue_family, swapchain_loader,
             swapchain: vk::SwapchainKHR::null(), images: vec![], views: vec![], format: vk::Format::B8G8R8A8_UNORM,
             extent: vk::Extent2D { width: 1, height: 1 }, pool, cmd, image_available, render_done: vec![], in_flight,
-            mem_props, seen: Default::default(), vsync_seq: 0,
+            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, last_delta_deg: 0.0,
         };
         g.create_swapchain(window.inner_size())?;
+        if reproject {
+            g.warp = Some(g.create_warp()?);
+            println!("reprojection enabled");
+        }
         Ok(g)
     }
 
@@ -421,8 +450,119 @@ impl Gfx {
             vk::DependencyFlags::empty(), &[], &[], &[to_present]);
     }
 
+    /// Sampler, descriptor pool/layout and the graphics pipeline for the reprojection pass.
+    unsafe fn create_warp(&self) -> Result<WarpPipe, Box<dyn std::error::Error>> {
+        let spv = |bytes: &[u8]| ash::util::read_spv(&mut std::io::Cursor::new(bytes));
+        let vs_code = spv(include_bytes!("../shaders/warp.vert.spv"))?;
+        let fs_code = spv(include_bytes!("../shaders/warp.frag.spv"))?;
+        let vs = self.device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&vs_code), None)?;
+        let fs = self.device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&fs_code), None)?;
+        let sampler = self.device.create_sampler(
+            &vk::SamplerCreateInfo::default()
+                .mag_filter(vk::Filter::LINEAR).min_filter(vk::Filter::LINEAR)
+                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_BORDER)
+                .border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK)
+                .max_lod(0.0),
+            None,
+        )?;
+        let binding = [vk::DescriptorSetLayoutBinding::default()
+            .binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let desc_layout = self.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&binding), None)?;
+        let sizes = [vk::DescriptorPoolSize::default().ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).descriptor_count(64)];
+        let pool = self.device.create_descriptor_pool(
+            &vk::DescriptorPoolCreateInfo::default().max_sets(64).pool_sizes(&sizes)
+                .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET),
+            None,
+        )?;
+        let layouts = [desc_layout];
+        let ranges = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::FRAGMENT).offset(0).size(64)];
+        let layout = self.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts).push_constant_ranges(&ranges), None)?;
+
+        let entry = CStr::from_bytes_with_nul(b"main\0")?;
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::VERTEX).module(vs).name(entry),
+            vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::FRAGMENT).module(fs).name(entry),
+        ];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL).cull_mode(vk::CullModeFlags::NONE).line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let blend_att = [vk::PipelineColorBlendAttachmentState::default().color_write_mask(vk::ColorComponentFlags::RGBA)];
+        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_att);
+        let dyn_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dyn_states);
+        let formats = [self.format];
+        let mut rendering = vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&formats);
+        let ci = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages).vertex_input_state(&vertex_input).input_assembly_state(&input_assembly)
+            .viewport_state(&viewport).rasterization_state(&raster).multisample_state(&multisample)
+            .color_blend_state(&blend).dynamic_state(&dynamic).layout(layout).push_next(&mut rendering);
+        let pipeline = self.device.create_graphics_pipelines(vk::PipelineCache::null(), &[ci], None).map_err(|e| e.1)?[0];
+        self.device.destroy_shader_module(vs, None);
+        self.device.destroy_shader_module(fs, None);
+        Ok(WarpPipe { sampler, desc_layout, pool, layout, pipeline })
+    }
+
+    /// Reprojection pass: draw each eye by sampling its image along the lines of sight the head has turned to since
+    /// SteamVR rendered it. `rows` is the rotation (three vec4 rows) from warp::push_rows.
+    unsafe fn record_warp(&mut self, cmd: vk::CommandBuffer, idx: usize, dst: vk::Image, e: &Eyes, rows: [f32; 12]) {
+        let (pipeline, layout) = {
+            let w = self.warp.as_ref().unwrap();
+            (w.pipeline, w.layout)
+        };
+        let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+        let to_attachment = vk::ImageMemoryBarrier::default()
+            .image(dst).subresource_range(range)
+            .old_layout(vk::ImageLayout::UNDEFINED).new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+        self.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::DependencyFlags::empty(), &[], &[], &[to_attachment]);
+        for &(img, _, _) in &e.imgs {
+            let old = if self.seen.insert(img) { vk::ImageLayout::UNDEFINED } else { vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL };
+            let to_read = vk::ImageMemoryBarrier::default()
+                .image(img).subresource_range(range)
+                .old_layout(old).new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .src_access_mask(vk::AccessFlags::MEMORY_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ);
+            self.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::ALL_COMMANDS, vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(), &[], &[], &[to_read]);
+        }
+        let att = [vk::RenderingAttachmentInfo::default()
+            .image_view(self.views[idx]).image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR).store_op(vk::AttachmentStoreOp::STORE)
+            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] } })];
+        self.device.cmd_begin_rendering(cmd, &vk::RenderingInfo::default()
+            .render_area(vk::Rect2D { offset: vk::Offset2D::default(), extent: self.extent }).layer_count(1).color_attachments(&att));
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+        let (w, h) = (self.extent.width, self.extent.height);
+        let half = w / 2;
+        let mut push = [0f32; 16];
+        push[..12].copy_from_slice(&rows);
+        push[12..].copy_from_slice(&warp::FOV);
+        let bytes = std::slice::from_raw_parts(push.as_ptr() as *const u8, 64);
+        for eye in 0..2usize {
+            let x = (eye as u32 * half) as i32;
+            self.device.cmd_set_viewport(cmd, 0, &[vk::Viewport { x: x as f32, y: 0.0, width: half as f32, height: h as f32, min_depth: 0.0, max_depth: 1.0 }]);
+            self.device.cmd_set_scissor(cmd, 0, &[vk::Rect2D { offset: vk::Offset2D { x, y: 0 }, extent: vk::Extent2D { width: half, height: h } }]);
+            self.device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, layout, 0, &[e.sets[eye]], &[]);
+            self.device.cmd_push_constants(cmd, layout, vk::ShaderStageFlags::FRAGMENT, 0, bytes);
+            self.device.cmd_draw(cmd, 3, 1, 0, 0);
+        }
+        self.device.cmd_end_rendering(cmd);
+        let to_present = vk::ImageMemoryBarrier::default()
+            .image(dst).subresource_range(range)
+            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL).new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+        self.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            vk::DependencyFlags::empty(), &[], &[], &[to_present]);
+    }
+
     /// Free destroyed sets, import the sets the latest PRESENT refers to, and return the two eye images (if any).
-    unsafe fn prepare_eyes(&mut self, shared: &Mutex<Shared>) -> Option<[(vk::Image, u32, u32); 2]> {
+    unsafe fn prepare_eyes(&mut self, shared: &Mutex<Shared>) -> Option<Eyes> {
         let mut guard = shared.lock().unwrap();
         let sh = &mut *guard;
         for id in sh.destroyed.drain(..) {
@@ -431,6 +571,10 @@ impl Gfx {
                     Some(imgs) => {
                         for im in imgs {
                             self.seen.remove(&im.image);
+                            if let Some(w) = &self.warp {
+                                if im.view != vk::ImageView::null() { self.device.destroy_image_view(im.view, None); }
+                                if im.set != vk::DescriptorSet::null() { let _ = self.device.free_descriptor_sets(w.pool, &[im.set]); }
+                            }
                             self.device.destroy_image(im.image, None);
                             self.device.free_memory(im.memory, None);
                         }
@@ -448,6 +592,7 @@ impl Gfx {
         let latest = sh.present?;
         let p = if latest.at.elapsed() >= std::time::Duration::from_millis(4) { latest } else { sh.previous.unwrap_or(latest) };
         let mut out = [(vk::Image::null(), 0u32, 0u32); 2];
+        let mut sets = [vk::DescriptorSet::null(); 2];
         for (i, (sid, idx)) in [p.left, p.right].into_iter().enumerate() {
             let set = sh.sets.get_mut(&sid)?;
             if set.images.is_none() {
@@ -465,8 +610,9 @@ impl Gfx {
             }
             let img = &set.images.as_ref().unwrap()[idx as usize];
             out[i] = (img.image, set.width, set.height);
+            sets[i] = img.set;
         }
-        Some(out)
+        Some(Eyes { imgs: out, sets, render_q: p.render_q })
     }
 
     /// Import SteamVR's three swap textures. The parameters must match how SteamVR created the images (same format,
@@ -508,13 +654,32 @@ impl Gfx {
                 }
             };
             self.device.bind_image_memory(image, memory, 0)?;
-            out.push(ImportedImage { image, memory });
+            let (view, dset) = if let Some(w) = &self.warp {
+                let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+                let view = self.device.create_image_view(
+                    &vk::ImageViewCreateInfo::default().image(image).view_type(vk::ImageViewType::TYPE_2D)
+                        .format(vk::Format::from_raw(set.format as i32)).subresource_range(range),
+                    None,
+                )?;
+                let layouts = [w.desc_layout];
+                let dset = self.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(w.pool).set_layouts(&layouts))?[0];
+                let info = [vk::DescriptorImageInfo::default().sampler(w.sampler).image_view(view).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                self.device.update_descriptor_sets(
+                    &[vk::WriteDescriptorSet::default().dst_set(dset).dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&info)],
+                    &[],
+                );
+                (view, dset)
+            } else {
+                (vk::ImageView::null(), vk::DescriptorSet::null())
+            };
+            out.push(ImportedImage { image, memory, view, set: dset });
         }
         Ok(out)
     }
 
     /// Draw one frame: the driver's eyes if it is presenting, otherwise the stereo test pattern.
-    unsafe fn draw(&mut self, t: f32, window: &Window, shared: &Mutex<Shared>) -> Result<(), Box<dyn std::error::Error>> {
+    unsafe fn draw(&mut self, t: f32, window: &Window, shared: &Mutex<Shared>, pose: &Mutex<tracking::PoseState>) -> Result<(), Box<dyn std::error::Error>> {
         self.device.wait_for_fences(&[self.in_flight], true, u64::MAX)?;
         let eyes = self.prepare_eyes(shared);
         let (idx, _) = match self.swapchain_loader.acquire_next_image(self.swapchain, u64::MAX, self.image_available, vk::Fence::null()) {
@@ -538,7 +703,27 @@ impl Gfx {
         self.device.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
         let image = self.images[idx as usize];
         match eyes {
-            Some(e) => self.record_blit(cmd, image, e),
+            Some(e) => {
+                // Reproject when we have the pose SteamVR rendered for and a current tracked pose; otherwise plain blit.
+                let mut delta = None;
+                let rows = if self.warp.is_some() {
+                    e.render_q.and_then(|rq| {
+                        let p = *pose.lock().unwrap();
+                        if p.valid {
+                            let d = (rq[0] * p.q[0] + rq[1] * p.q[1] + rq[2] * p.q[2] + rq[3] * p.q[3]).abs().min(1.0);
+                            delta = Some(2.0 * d.acos().to_degrees());
+                            Some(warp::push_rows(&warp::view_delta(rq, p.q)))
+                        } else { None }
+                    })
+                } else {
+                    None
+                };
+                if let Some(d) = delta { self.last_delta_deg = d; }
+                match rows {
+                    Some(r) => self.record_warp(cmd, idx as usize, image, &e, r),
+                    None => self.record_blit(cmd, image, e.imgs),
+                }
+            }
             None => self.record_pattern(cmd, idx as usize, image, t),
         }
         self.device.end_command_buffer(cmd)?;
@@ -571,6 +756,13 @@ impl Drop for Gfx {
             for v in self.views.drain(..) { self.device.destroy_image_view(v, None); }
             self.device.destroy_fence(self.in_flight, None);
             self.device.destroy_semaphore(self.image_available, None);
+            if let Some(w) = self.warp.take() {
+                self.device.destroy_pipeline(w.pipeline, None);
+                self.device.destroy_pipeline_layout(w.layout, None);
+                self.device.destroy_descriptor_pool(w.pool, None);
+                self.device.destroy_descriptor_set_layout(w.desc_layout, None);
+                self.device.destroy_sampler(w.sampler, None);
+            }
             self.device.destroy_command_pool(self.pool, None);
             self.swapchain_loader.destroy_swapchain(self.swapchain, None);
             self.device.destroy_device(None);
@@ -588,6 +780,9 @@ struct App {
     frames: u32,
     last_report: Instant,
     shared: Arc<Mutex<Shared>>,
+    last_monitor_check: Instant,
+    reproject: bool,
+    pose: Arc<Mutex<tracking::PoseState>>,
 }
 
 impl ApplicationHandler for App {
@@ -608,7 +803,7 @@ impl ApplicationHandler for App {
         let window = el
             .create_window(Window::default_attributes().with_title("XREAL presenter").with_fullscreen(Some(Fullscreen::Borderless(chosen))))
             .expect("create window");
-        self.gfx = Some(unsafe { Gfx::new(&window) }.expect("vulkan init"));
+        self.gfx = Some(unsafe { Gfx::new(&window, self.reproject) }.expect("vulkan init"));
         self.window = Some(window);
     }
 
@@ -623,13 +818,17 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let (Some(g), Some(w)) = (&mut self.gfx, &self.window) {
-                    if let Err(e) = unsafe { g.draw(self.start.elapsed().as_secs_f32(), w, &self.shared) } {
+                    if let Err(e) = unsafe { g.draw(self.start.elapsed().as_secs_f32(), w, &self.shared, &self.pose) } {
                         eprintln!("draw error: {e}");
                         el.exit();
                     }
                     self.frames += 1;
                     if self.last_report.elapsed().as_secs_f32() >= 5.0 {
-                        println!("{:.1} fps", self.frames as f32 / self.last_report.elapsed().as_secs_f32());
+                        if g.reproject {
+                            println!("{:.1} fps, reprojection delta {:.2} deg", self.frames as f32 / self.last_report.elapsed().as_secs_f32(), g.last_delta_deg);
+                        } else {
+                            println!("{:.1} fps", self.frames as f32 / self.last_report.elapsed().as_secs_f32());
+                        }
                         self.frames = 0;
                         self.last_report = Instant::now();
                     }
@@ -641,6 +840,18 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
         if let Some(w) = &self.window {
+            // When the glasses re-plug (mode change, sleep and wake) the compositor can drop our window onto another
+            // output. Keep putting it back on the glasses' output whenever that output exists.
+            if self.last_monitor_check.elapsed() >= std::time::Duration::from_millis(500) {
+                self.last_monitor_check = Instant::now();
+                let current = w.current_monitor().and_then(|m| m.name());
+                if current.as_deref() != Some(self.monitor_name.as_str()) {
+                    if let Some(m) = w.available_monitors().find(|m| m.name().as_deref() == Some(self.monitor_name.as_str())) {
+                        println!("window is on {:?}; moving it to {}", current, self.monitor_name);
+                        w.set_fullscreen(Some(Fullscreen::Borderless(Some(m))));
+                    }
+                }
+            }
             w.request_redraw();
         }
     }
@@ -648,18 +859,22 @@ impl ApplicationHandler for App {
 
 fn main() {
     let mut monitor_name = "DP-1".to_string();
+    let mut reproject = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         if a == "--monitor" {
             monitor_name = args.next().expect("--monitor needs a name");
+        } else if a == "--reproject" {
+            reproject = true;
         }
     }
     let el = EventLoop::new().expect("event loop");
     el.set_control_flow(ControlFlow::Poll);
     let shared = Arc::new(Mutex::new(Shared::default()));
     let pose = Arc::new(Mutex::new(tracking::PoseState::default()));
+    let pose_for_app = pose.clone();
     { let p = pose.clone(); std::thread::spawn(move || tracking::run(p)); }
     { let (sh, p) = (shared.clone(), pose.clone()); std::thread::spawn(move || link_thread(sh, p)); }
-    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared };
+    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), reproject, pose: pose_for_app };
     el.run_app(&mut app).expect("run");
 }
