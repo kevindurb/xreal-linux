@@ -1,0 +1,401 @@
+{
+  "version": 1,
+  "created": "2026-10-07T14:31:51.450Z",
+  "source": {
+    "kind": "live",
+    "label": "live 169.254.1.1:52998"
+  },
+  "bias": [
+    -0.007743592135954635,
+    -0.0011473342219260134,
+    2.1129623458847026e-05
+  ],
+  "directions": {
+    "yaw-left": {
+      "axis": "y",
+      "sign": -1,
+      "measuredDeg": -32.7,
+      "target": 45,
+      "check": "warn"
+    },
+    "yaw-right": {
+      "axis": "y",
+      "sign": 1,
+      "measuredDeg": 57.5,
+      "target": 45,
+      "check": "warn"
+    },
+    "pitch-up": {
+      "axis": "x",
+      "sign": 1,
+      "measuredDeg": 53.5,
+      "target": 30,
+      "check": "warn"
+    },
+    "pitch-down": {
+      "axis": "x",
+      "sign": -1,
+      "measuredDeg": -53.5,
+      "target": 30,
+      "check": "warn"
+    },
+    "roll-left": {
+      "axis": "z",
+      "sign": -1,
+      "measuredDeg": -39.5,
+      "target": 30,
+      "check": "warn"
+    },
+    "roll-right": {
+      "axis": "z",
+      "sign": 1,
+      "measuredDeg": 38.8,
+      "target": 30,
+      "check": "warn"
+    }
+  },
+  "tests": [
+    {
+      "motion": "yaw",
+      "direction": "left",
+      "targetDeg": 45,
+      "go": {
+        "label": "go",
+        "delta": [
+          1.487876764301607,
+          -32.74537212350471,
+          -8.178304129630522
+        ],
+        "dominant": "y",
+        "dominantIndex": 1,
+        "sign": -1,
+        "deltaDominant": -32.74537212350471,
+        "mixedRatio": 0.24975450267551288,
+        "peakRate": 0.9664678771441101,
+        "pathDeg": 36.49524015579757,
+        "seconds": 1.2010040000000117,
+        "gravityRotDeg": 1.0639954811373815,
+        "gravityAxis": [
+          -0.9480612931718827,
+          -0.08078474946786358,
+          0.30765826600738705
+        ]
+      },
+      "ret": {
+        "label": "return",
+        "delta": [
+          -0.9849151680620467,
+          33.88084277648661,
+          7.028626975686416
+        ],
+        "dominant": "y",
+        "dominantIndex": 1,
+        "sign": 1,
+        "deltaDominant": 33.88084277648661,
+        "mixedRatio": 0.20745136188183314,
+        "peakRate": 1.1265348772169743,
+        "pathDeg": 54.037770926470884,
+        "seconds": 2.230997000000002,
+        "gravityRotDeg": 0.8556425920334143,
+        "gravityAxis": [
+          0.9185376347498311,
+          0.09772829793272501,
+          -0.383063693569827
+        ]
+      },
+      "verdict": {
+        "level": "warn",
+        "notes": [
+          "angle 73% of target"
+        ],
+        "closure": 1.1354706529819012,
+        "ratio": 0.7276749360778824
+      }
+    },
+    {
+      "motion": "yaw",
+      "direction": "right",
+      "targetDeg": 45,
+      "go": {
+        "label": "go",
+        "delta": [
+          0.08404531289060535,
+          57.50523498730102,
+          11.858275352643668
+        ],
+        "dominant": "y",
+        "dominantIndex": 1,
+        "sign": 1,
+        "deltaDominant": 57.50523498730102,
+        "mixedRatio": 0.20621210147671512,
+        "peakRate": 3.5213559538692922,
+        "pathDeg": 146.42186060746766,
+        "seconds": 2.444002999999981,
+        "gravityRotDeg": 0.6696744583761732,
+        "gravityAxis": [
+          0.2845137584883363,
+          0.21431146366378778,
+          -0.9344102513206529
+        ]
+      },
+      "ret": {
+        "label": "return",
+        "delta": [
+          -0.6817348277519802,
+          -56.10972624935464,
+          -13.021198114163187
+        ],
+        "dominant": "y",
+        "dominantIndex": 1,
+        "sign": -1,
+        "deltaDominant": -56.10972624935464,
+        "mixedRatio": 0.232066684059307,
+        "peakRate": 1.6174126177436032,
+        "pathDeg": 65.25653766944603,
+        "seconds": 1.4770070000000146,
+        "gravityRotDeg": 0.9914635751313803,
+        "gravityAxis": [
+          0.7564413553782443,
+          -0.15160192312152357,
+          0.6362494265454239
+        ]
+      },
+      "verdict": {
+        "level": "warn",
+        "notes": [
+          "angle 128% of target"
+        ],
+        "closure": 1.3955087379463862,
+        "ratio": 1.2778941108289117
+      }
+    },
+    {
+      "motion": "pitch",
+      "direction": "up",
+      "targetDeg": 30,
+      "go": {
+        "label": "go",
+        "delta": [
+          53.47717371746098,
+          -4.497768765359867,
+          1.7381258715068733
+        ],
+        "dominant": "x",
+        "dominantIndex": 0,
+        "sign": 1,
+        "deltaDominant": 53.47717371746098,
+        "mixedRatio": 0.08410632897548376,
+        "peakRate": 2.0454056537577787,
+        "pathDeg": 77.40191795340606,
+        "seconds": 1.8049959999999885,
+        "gravityRotDeg": 54.282144988486316,
+        "gravityAxis": [
+          -0.9999853727300421,
+          -0.004843340503761249,
+          -0.0024075669717405442
+        ]
+      },
+      "ret": {
+        "label": "return",
+        "delta": [
+          -53.53579859800949,
+          1.462178316410963,
+          -0.8653277343516506
+        ],
+        "dominant": "x",
+        "dominantIndex": 0,
+        "sign": -1,
+        "deltaDominant": -53.53579859800949,
+        "mixedRatio": 0.027312160361895266,
+        "peakRate": 1.9033391071221895,
+        "pathDeg": 62.54867595820462,
+        "seconds": 1.6670019999999965,
+        "gravityRotDeg": 54.17315235592238,
+        "gravityAxis": [
+          0.9999844161602682,
+          0.004965920277331517,
+          0.002550896392809687
+        ]
+      },
+      "verdict": {
+        "level": "warn",
+        "notes": [
+          "angle 178% of target"
+        ],
+        "closure": -0.05862488054851411,
+        "ratio": 1.7825724572486992
+      }
+    },
+    {
+      "motion": "pitch",
+      "direction": "down",
+      "targetDeg": 30,
+      "go": {
+        "label": "go",
+        "delta": [
+          -53.52880353095804,
+          -0.4541902225236436,
+          -0.45164337436245083
+        ],
+        "dominant": "x",
+        "dominantIndex": 0,
+        "sign": -1,
+        "deltaDominant": -53.52880353095804,
+        "mixedRatio": 0.008484968700280506,
+        "peakRate": 3.915613606520384,
+        "pathDeg": 59.81252417767621,
+        "seconds": 1.0769950000000108,
+        "gravityRotDeg": 52.887631453560594,
+        "gravityAxis": [
+          0.9999816357747561,
+          0.005904394600225178,
+          -0.0013661030883452543
+        ]
+      },
+      "ret": {
+        "label": "return",
+        "delta": [
+          52.103204586348646,
+          0.1579499152552888,
+          -2.085176314041344
+        ],
+        "dominant": "x",
+        "dominantIndex": 0,
+        "sign": 1,
+        "deltaDominant": 52.103204586348646,
+        "mixedRatio": 0.0400201164322947,
+        "peakRate": 1.9052399184730455,
+        "pathDeg": 62.84100547260123,
+        "seconds": 1.4710000000000036,
+        "gravityRotDeg": 52.71347798618155,
+        "gravityAxis": [
+          -0.9999764897053818,
+          -0.006645904112715886,
+          0.0016887850742529232
+        ]
+      },
+      "verdict": {
+        "level": "warn",
+        "notes": [
+          "angle 178% of target"
+        ],
+        "closure": -1.4255989446093906,
+        "ratio": 1.7842934510319346
+      }
+    },
+    {
+      "motion": "roll",
+      "direction": "left shoulder",
+      "targetDeg": 30,
+      "go": {
+        "label": "go",
+        "delta": [
+          3.1688757413579944,
+          7.805194792058133,
+          -39.53550394436486
+        ],
+        "dominant": "z",
+        "dominantIndex": 2,
+        "sign": -1,
+        "deltaDominant": -39.53550394436486,
+        "mixedRatio": 0.19742241816474015,
+        "peakRate": 1.9643856638605446,
+        "pathDeg": 61.28161675453779,
+        "seconds": 1.6500000000000057,
+        "gravityRotDeg": 41.331168355571116,
+        "gravityAxis": [
+          -0.07135406594739359,
+          -0.23700125619577797,
+          0.9688854430913896
+        ]
+      },
+      "ret": {
+        "label": "return",
+        "delta": [
+          -3.004913870421607,
+          -6.808220964133595,
+          40.44596376394736
+        ],
+        "dominant": "z",
+        "dominantIndex": 2,
+        "sign": 1,
+        "deltaDominant": 40.44596376394736,
+        "mixedRatio": 0.16832881035714847,
+        "peakRate": 2.0368694006546217,
+        "pathDeg": 47.98950881972186,
+        "seconds": 1.1989990000000148,
+        "gravityRotDeg": 41.28052752556917,
+        "gravityAxis": [
+          0.06795441602176516,
+          0.2341118420140875,
+          -0.9698318631453144
+        ]
+      },
+      "verdict": {
+        "level": "warn",
+        "notes": [
+          "angle 132% of target"
+        ],
+        "closure": 0.9104598195824991,
+        "ratio": 1.3178501314788287
+      }
+    },
+    {
+      "motion": "roll",
+      "direction": "right shoulder",
+      "targetDeg": 30,
+      "go": {
+        "label": "go",
+        "delta": [
+          6.391804130671684,
+          -10.185576006400233,
+          38.82664208230183
+        ],
+        "dominant": "z",
+        "dominantIndex": 2,
+        "sign": 1,
+        "deltaDominant": 38.82664208230183,
+        "mixedRatio": 0.2623347129738803,
+        "peakRate": 2.0796233010316545,
+        "pathDeg": 51.8662055872869,
+        "seconds": 1.5369969999999853,
+        "gravityRotDeg": 40.78072977561088,
+        "gravityAxis": [
+          -0.17204215768121758,
+          0.22911159971240438,
+          -0.9580758690508879
+        ]
+      },
+      "ret": {
+        "label": "return",
+        "delta": [
+          -7.231645424384112,
+          7.049559541043316,
+          -38.99558140750857
+        ],
+        "dominant": "z",
+        "dominantIndex": 2,
+        "sign": -1,
+        "deltaDominant": -38.99558140750857,
+        "mixedRatio": 0.18544781647983494,
+        "peakRate": 1.5561390343177837,
+        "pathDeg": 43.67108746209206,
+        "seconds": 1.0529970000000048,
+        "gravityRotDeg": 40.83438545321931,
+        "gravityAxis": [
+          0.17525262771574496,
+          -0.23168036553019863,
+          0.9568755011528511
+        ]
+      },
+      "verdict": {
+        "level": "warn",
+        "notes": [
+          "angle 129% of target"
+        ],
+        "closure": -0.16893932520673616,
+        "ratio": 1.2942214027433943
+      }
+    }
+  ]
+}

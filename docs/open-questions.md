@@ -3,7 +3,9 @@
 ## Unverified
 
 - Whether XRLinuxDriver or `xreal_one_driver` work with the 1S's USB ID (`3318:043e`).
-- IMU axis conventions and gyro units under motion (only a stationary capture exists).
+- Yaw sign has no independent (accelerometer) check. Axes, units and the pitch/roll signs are measured, see
+  [findings.md](findings.md); a repeat run, ideally by another wearer and with the on-glasses stabilizer state noted,
+  would firm it up.
 - What ports 52990-52995 and 52999 do, and whether any accept commands. Nothing was ever sent to them.
 - What port 52996 carries, and whether its timestamps line up with camera frames.
 - Whether the HID interfaces take control commands (brightness, display mode, etc.). Nothing was written to them.

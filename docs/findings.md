@@ -59,7 +59,28 @@ Fixed 134-byte records, about 1400 per second in total. Layout (little endian), 
   a magnitude of about 9.77, which is gravity in m/s^2. So gyro is in rad/s and accel in m/s^2.
 - Type `0x04`: about 400 Hz and every float is NaN. Probably a sensor that is absent, e.g. a magnetometer. Upstream
   drivers ignore these records.
-- Axis conventions and gyro units were not verified with motion. Only a stationary capture was analysed.
+
+### IMU axes and signs (measured)
+
+From one run of the guided direction tests in `tools/imu_web` (raw result in [axis-map.json](axis-map.json)): the wearer
+moved to a pose, held still, then returned to centre, and the page integrated the gyro over each move.
+
+| Motion | Gyro axis | Sign |
+|---|---|---|
+| Yaw | Y | turn left = negative, turn right = positive |
+| Pitch | X | look up = positive, look down = negative |
+| Roll | Z | tilt to the left shoulder = negative, to the right shoulder = positive |
+
+- Gyro units are rad/s. For pitch and roll the integrated gyro angle matched the angle of the accelerometer's gravity
+  vector to within about 5% (54.3 vs 53.5 deg, 52.9 vs 53.5, 41.3 vs 39.5, 40.8 vs 38.8).
+- For pitch and roll the gravity vector rotated in the opposite sense to the gyro on the same axis, as expected for a
+  right-handed gyro, which independently supports those two signs.
+- Yaw cannot be cross-checked this way (turning in place barely changes gravity), so its sign rests on the gyro alone.
+- Returning to centre left a net error of 0.1-1.4 deg on every test. Gyro bias was about (-0.008, -0.001, 0.000) rad/s.
+- Peak rates of up to about 3.9 rad/s (roughly 220 deg/s) were seen with no obvious clipping.
+- Limits: a single run with one wearer. Secondary axes picked up around 10 deg during some moves, which is normal head
+  motion. This is the glasses' own sensor frame, not a fused head pose, and the on-glasses stabilizer state during the
+  run is unknown.
 
 ## Port 52997: Eye camera
 
