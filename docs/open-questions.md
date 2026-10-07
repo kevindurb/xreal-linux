@@ -4,7 +4,8 @@
 
 - Whether XRLinuxDriver actually works on this 1S. Its source lists the ID (`3318:043e`), but it has not been run here.
 - Whether the glasses' connector has the DRM `non-desktop` property, and what a genuine stereo side-by-side mode offers (not yet observed).
-- Whether SteamVR can drive the glasses as its headset display on this Deck (SteamVR is not installed yet).
+- How to get SteamVR to display on the glasses: the connector is not `non-desktop`, so SteamVR's DRM-lease requirement fails
+  (see findings.md). Candidate fixes: flag it non-desktop (EDID override), or present frames from our own driver.
 - Yaw sign has no independent (accelerometer) check. Axes, units and the pitch/roll signs are measured, see
   [findings.md](findings.md); a repeat run, ideally by another wearer and with the on-glasses stabilizer state noted,
   would firm it up.

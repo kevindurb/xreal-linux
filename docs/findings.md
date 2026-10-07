@@ -138,3 +138,25 @@ moved to a pose, held still, then returned to centre, and the page integrated th
 - XREAL's SDK 3.1 documents 6DoF with the Eye on Android hosts only. There is no Linux support.
 - No public work on ports 52996, 52997 or 52990-52995 or on the Eye's stream format was found. The search was not
   exhaustive and some pages (Monado merge requests) could not be read.
+
+## SteamVR on the Deck (tried 2026-10-07)
+
+Setup: SteamVR 2.17.10 (Steam app 250820, 5.2 GB) installed through the running Steam client on a Plasma 6.7 Wayland
+session; the Deck's own panel was disabled so the glasses (`DP-1`, 1920x1200 at 120 Hz) were the only display.
+
+- First launch asks for superuser access and runs `pkexec setcap CAP_SYS_NICE=eip` on `vrcompositor-launcher`. That worked.
+- SteamVR's bundled `null` driver (a simulated headset) can be enabled from `config/steamvr.vrsettings` and **loaded and
+  activated fine** with a window placed on the glasses' output.
+- The compositor then failed to start: `Tried to find direct display through Wayland: (nil)`,
+  `CHmdWindowSDL: VR requires direct mode`, `VRInitError_Compositor_CannotDRMLeaseDisplay`. On this Linux build SteamVR
+  will not draw into an ordinary desktop window; it needs a DRM lease of the display.
+- KWin does advertise `wp_drm_lease_device_v1`, but the glasses' connector has DRM property **`non-desktop = 0`** (read
+  directly with libdrm), and KDE lists it as a normal enabled output. Compositors normally only lease non-desktop
+  connectors, so there is nothing for SteamVR to lease. The EDID (manufacturer `MRG`, product `0x4102`) has no obvious
+  VR marker.
+- Not yet tried: flagging the connector non-desktop (e.g. an EDID override), or having our own driver present frames
+  itself through the driver direct-mode interface (which the `null` driver advertises) so SteamVR's compositor does not
+  need the lease.
+- SteamVR also ships a `gamepad` driver (off by default), not yet tried.
+- Rootless podman over SSH failed (`open /run/libpod/alive.lck: permission denied`, even with `XDG_RUNTIME_DIR` set).
+  Not yet diagnosed; it may work from a local terminal session.
