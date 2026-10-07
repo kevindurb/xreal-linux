@@ -193,3 +193,36 @@ input devices, the DRM connector/EDID and udev. Run 1: the wearer opened the gla
   and a half-SBS `1920x1080` at 60 Hz. It marks the 1S as SBS-capable but does not open its HID "MCU" controller for
   One-series glasses, and neither it, xrealOneDeviceKit nor xreal_one_driver mention port 52999 or a display-mode command
   for the One series. How to command the glasses (for example to enter SBS automatically) is therefore unknown.
+
+## Mode changes mapped to traffic (watcher run 3)
+
+Wearer sequence (wall clock 09:47:01 + t): baseline, full SBS, half SBS, SBS off, anchor, follow, then an accidental volume
+change and a brightness change. Every display-mode change re-plugged the display for about 1.7 s while all TCP sessions
+and the USB link stayed up.
+
+| Mode | Connector after re-plug | EDID hash | Modes |
+|---|---|---|---|
+| Off (normal) | connected | `0a6d3728` | 8 modes: `1920x1200` and `1920x1080`, each at 60/90/120 Hz, plus others |
+| Full SBS | connected | `d14a10ed` | one mode, `3840x1080` |
+| Half SBS | connected | `f6fdc196` | three modes, all `1920x1080` |
+
+So the current mode can be **detected from the DRM mode list or EDID** with no protocol knowledge.
+
+- Port 52999 `27 66 00 00 00 02 18 xx` is a display-link message: `xx=02` arrives at the instant the connector disconnects
+  and `xx=01` messages follow once it reconnects.
+- Port 52999 `27 3d ...` 8-byte messages (`18 01` / `18 02` alternating) appear around menu interaction; meaning unconfirmed.
+- Menu interaction shows as `27 2e` pairs (indices 01 and 02, with a kind byte of 01, 02 or 03) and a `27 12` 70-byte
+  message when the menu opens; meaning of the kinds is unconfirmed.
+- **Volume** keys arrive over standard HID: a consumer-control report `02 ea 00` (usage `0x00EA`, Volume Decrement) on the
+  buttons interface plus `KEY_VOLUMEDOWN` (code 114) on the input device, and at the same time a `27 12` message with kind `09`.
+- **Brightness** changes produced **no HID or input events**; they appeared only as `27 12` messages on 52999 (kind `07` then `06`
+  with a counter running 8 to 1 and then 2 to 9, which looks like a level).
+- **Port 52996's rate follows the display state**, dropping to about 0.4 kB/s while the display link was down and recovering
+  afterwards (4.6 kB/s normally, which is 120 records/s in the 120 Hz mode). This contradicts the earlier guess that it is
+  camera frame metadata: it looks like **per-refresh display timing on the same clock as the IMU**. That would be useful for
+  latency prediction. Not verified record by record.
+- **The camera stream (52997) is not always on.** It was idle at the start of this run (glasses in follow mode), began
+  streaming after the switch to anchor mode, and was idle again afterwards (a 4 s read after returning to follow got no
+  data). Earlier runs had it streaming at about 11.5 MB/s from the start. Likely the glasses only run the camera when a
+  feature such as anchor needs it. Not yet confirmed by controlled toggling.
+- Still unknown: any host-to-glasses command, including how to switch SBS from the host.
