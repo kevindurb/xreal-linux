@@ -64,3 +64,12 @@ The server binds to 127.0.0.1 by default; `--bind 0.0.0.0` exposes an unauthenti
 
 Camera captures show the inside of a home, so raw captures and rendered images are deliberately not in this repo
 (`captures/` is git-ignored).
+
+## Development workflow (OpenSpec)
+
+Changes are planned with [OpenSpec](https://github.com/Fission-AI/OpenSpec): `openspec/specs/` holds what the system does today
+(`imu-tracking`, `presenter-display`, `steamvr-driver`, `glasses-setup`), `openspec/changes/` holds proposed changes as deltas against
+those specs, and `openspec/config.yaml` gives the AI the project context (architecture, hard facts about the glasses and SteamVR,
+build and test environment). In Claude Code, `/opsx:propose "idea"` creates a proposal, specs delta, design and tasks, `/opsx:apply`
+implements them and `/opsx:archive` folds them into the specs. `openspec list` and `openspec validate --all` check the state.
+The specs describe behaviour; known bugs and unverified items live in `docs/open-questions.md`.

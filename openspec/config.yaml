@@ -1,0 +1,69 @@
+schema: spec-driven
+
+context: |
+  Project: make XREAL 1S glasses (optionally with the XREAL Eye camera) work as a SteamVR headset on Linux. First target is a
+  Steam Deck (Bazzite, Plasma 6 on Wayland, AMD RADV); the design must also work on any Linux gaming PC and eventually ship as an
+  easy download (Rust + Qt + Flatpak was floated). Two tiers: 3DoF from the IMU alone, and optional 6DoF using the Eye camera
+  (not started; the camera stream is only partly decoded).
+
+  Architecture (see README.md and docs/findings.md):
+  - driver/ (C++): a SteamVR/OpenVR HMD driver using DRIVER DIRECT MODE. It gets SteamVR's per-eye swap textures from
+    VRIPCResourceManager, forwards their fds and per-frame messages to the presenter over an abstract unix socket, and reports the
+    pose the presenter sends. Built statically (libstdc++) so it loads inside SteamVR.
+  - presenter/ (Rust, ash + winit): owns the glasses' display and the IMU. Reads the IMU over TCP, fuses orientation, imports
+    SteamVR's textures into Vulkan, and presents each eye into its half of a 3840x1080 side-by-side swapchain, optionally with
+    rotational reprojection (--reproject). Also has debug features: --sim-pose, --dump, --wait-fences.
+  - tools/ : vr_session.sh (start/stop on the Deck), doctor.sh (checks preconditions), imu_web/ (axis-check web page),
+    analyze_*.py and find_bad_frames.py (analyse presenter frame dumps), watch_control.py (passive control-traffic watcher).
+  - docs/findings.md is the record of everything measured about the glasses and SteamVR; docs/open-questions.md lists what is unverified.
+
+  Hard facts that constrain designs (all verified on hardware unless marked):
+  - The glasses expose USB networking: link-local 169.254.1.1 / 169.254.2.1, TCP ports 52990-52999. 52998 = IMU stream, 134-byte
+    records (match only the first 6 header bytes; bytes 6-7 vary), 52997 = Eye camera frames, 52996 = display-refresh timestamps,
+    52999 = status/control events (read-only so far). Nothing has ever been sent to the glasses; there is no known host-to-glasses command.
+  - IMU frame: sensor Y points down; converting a vector from the sensor frame to OpenVR body frame is (x, -y, -z). No magnetometer, so yaw drifts.
+  - SteamVR on Linux refuses to draw into a desktop window and needs a DRM lease of a "non-desktop" connector. The glasses' connector is
+    not non-desktop, so direct mode in our own driver (no lease needed) is the chosen route.
+  - SteamVR's vrserver runs inside Steam's pressure-vessel container: it cannot see files under /run/user, so driver<->presenter use an
+    ABSTRACT unix socket (@xreal-presenter-<uid>) and the presenter checks SO_PEERCRED.
+  - Glasses must be in FULL SBS (a single 3840x1080 mode), Follow mode, Stabilizer OFF (anchor/stabilizer fight our own head tracking),
+    and auto-sleep off (sleeping drops them back to a normal 2D mode). The mode can be detected from the DRM mode list; Stabilizer and
+    follow cannot be read from the control channel.
+  - Required SteamVR settings: power.turnOffScreensTimeout very large and power.pauseCompositorOnStandby false (otherwise the headset
+    is put into standby after 5 s of stillness), a modest per-eye render size (the Deck's GPU is saturated by SteamVR Home), motionSmoothing off.
+  - SteamVR's Present() means "submitted", not "finished". Imported textures use opaque-fd external memory with SteamVR's exact image
+    parameters (same GPU required; AMD verified, other vendors unverified).
+  - KNOWN OPEN BUG: with SteamVR Home's dashboard, hovering over a button (the pointer appearing or disappearing) produces single
+    bad frames in both eyes (world content wrong, head-locked overlays right). Verified to be complete images from SteamVR, not caused
+    by fences, bounds, layer count, texture churn, GetPose or velocity. Trying SteamVR's beta branch next.
+
+  Environment and workflow:
+  - The Deck is reached with `ssh steamdeck` over Tailscale. Its Tailscale node key can expire (SSH then times out).
+  - The Deck host has no Rust and no libstdc++-static: build in podman containers (use /usr/bin/podman, NOT the linuxbrew podman, and set
+    XDG_RUNTIME_DIR=/run/user/1000 over SSH). Presenter: fedora:44 + rust/cargo, with a cargo cache volume. Driver: fedora:44 + gcc-c++ + libstdc++-static.
+  - Shaders in presenter/shaders are precompiled with glslc and committed (.spv).
+  - Verification matters here: many theories were wrong. Say what was measured vs inferred, and test on the hardware (the frame-dump and
+    simulated-head-sweep tooling exists so a change can be checked without a person wearing the glasses).
+  - Commits end with a "Co-Authored-By" attribution line when the harness provides one. Do not push without being asked.
+
+rules:
+  proposal:
+    - State what is verified on hardware versus assumed, and name the experiment that would settle each assumption.
+    - Include a "Non-goals" section.
+  specs:
+    - Write requirements about observable behaviour of the glasses, driver or presenter, not about implementation details.
+    - Use SHALL/MUST for requirements and a concrete WHEN/THEN scenario for each, including the glasses' mode where it matters.
+  design:
+    - Call out which parts depend on the Steam Deck (AMD, Wayland, Bazzite) and which must hold on other hardware.
+    - Note anything that touches the pressure-vessel boundary, SteamVR settings, or the glasses' menu settings the user must set.
+  tasks:
+    - Include a verification task for each change that says how it is checked on the Deck (logs, doctor.sh, a frame dump, or a user check).
+
+operations:
+  apply:
+    guidance:
+      - Build the driver and presenter in podman containers on the Deck; restart SteamVR with tools/vr_session.sh after a driver change.
+      - After changing behaviour, update docs/findings.md or docs/open-questions.md with what was actually measured.
+  archive:
+    guidance:
+      - Summarize what was verified on hardware and what remains unverified before archiving.
