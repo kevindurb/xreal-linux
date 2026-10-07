@@ -1,0 +1,7 @@
+{
+	"alwaysActivate": true,
+	"name": "xreal",
+	"directory": "",
+	"resourceOnly": false,
+	"hmd_presence": [ "*.*" ]
+}

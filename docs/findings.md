@@ -160,3 +160,16 @@ session; the Deck's own panel was disabled so the glasses (`DP-1`, 1920x1200 at 
 - SteamVR also ships a `gamepad` driver (off by default), not yet tried.
 - Rootless podman over SSH failed (`open /run/libpod/alive.lck: permission denied`, even with `XDG_RUNTIME_DIR` set).
   Not yet diagnosed; it may work from a local terminal session.
+
+### Driver direct mode works (prototype, 2026-10-07)
+
+A minimal driver (`driver/`) that sets `Prop_HasDriverDirectModeComponent_Bool`, implements
+`IVRDriverDirectModeComponent` and gets its swap textures from `VRIPCResourceManager()` (`NewSharedVulkanImage`,
+`RefResource`, `ReceiveSharedFd`) made SteamVR 2.17.10 start its compositor **without a DRM lease**. The compositor logged
+`Direct mode: enabled` and `Headset is using driver direct mode`, SteamVR Home allocated 3-deep swap sets
+(2714x1527, VK format 43, about 17 MB per texture, each with a dma-buf fd), and `Present` was called at the configured
+60 Hz. The compositor also logs `No Vulkan command buffer open in CGpuTiming::MarkEvent!` errors, which have not been
+investigated. Nothing is shown on the glasses yet: the driver only receives frames. Next steps are getting the dma-bufs
+onto the glasses' output (for example a fullscreen Wayland surface with `zwp_linux_dmabuf_v1`, which KWin advertises) and
+feeding the IMU into the pose. Whether the glasses have a true stereo side-by-side mode (needed to give each eye its own
+image) is still unverified.

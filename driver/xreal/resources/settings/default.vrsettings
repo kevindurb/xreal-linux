@@ -1,0 +1,10 @@
+{
+	"driver_xreal": {
+		"enable": true,
+		"render_width": 1920,
+		"render_height": 1080,
+		"window_width": 3840,
+		"window_height": 1080,
+		"display_frequency": 60.0
+	}
+}

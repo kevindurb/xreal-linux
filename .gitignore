@@ -2,3 +2,5 @@ captures/
 *.png
 *.bin
 __pycache__/
+.openvr/
+xreal/bin/
