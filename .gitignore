@@ -1,3 +1,4 @@
 captures/
 *.png
 *.bin
+__pycache__/

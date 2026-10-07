@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XREAL IMU Check</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --fg: #1b1f24; --muted: #667085; --card: #ffffff; --border: #dde1e7;
+    --cx: #d92d3a; --cy: #1f9d55; --cz: #2f5bd8;
+    --ok: #1f9d55; --warn: #b7791f; --bad: #d92d3a; --accent: #2f5bd8; --accent-fg: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1216; --fg: #e8eaee; --muted: #8b94a3; --card: #171b21; --border: #2a303a;
+      --cx: #ff6b75; --cy: #4cd387; --cz: #7b9bff;
+      --ok: #4cd387; --warn: #f0b24a; --bad: #ff6b75; --accent: #7b9bff; --accent-fg: #0f1216;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1216; --fg: #e8eaee; --muted: #8b94a3; --card: #171b21; --border: #2a303a;
+    --cx: #ff6b75; --cy: #4cd387; --cz: #7b9bff;
+    --ok: #4cd387; --warn: #f0b24a; --bad: #ff6b75; --accent: #7b9bff; --accent-fg: #0f1216;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header, main { max-width: 1100px; margin: 0 auto; padding: 0 16px; }
+  header { padding-top: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  main { padding-bottom: 40px; display: grid; gap: 14px; margin-top: 12px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .pill { padding: 2px 10px; border-radius: 99px; border: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+  .pill.good { color: var(--ok); border-color: var(--ok); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+  #banner { flex-basis: 100%; padding: 6px 10px; border-radius: 8px; background: var(--warn); color: #000; font-weight: 600; }
+  .muted { color: var(--muted); }
+  .charts { display: grid; gap: 14px; grid-template-columns: 1fr; }
+  .chart-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+  .legend span { margin-right: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  canvas { width: 100%; height: 170px; display: block; }
+  .x { color: var(--cx); } .y { color: var(--cy); } .z { color: var(--cz); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+  button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border);
+           background: var(--card); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  select, input[type=number] { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border);
+                                background: var(--bg); color: var(--fg); }
+  input[type=number] { width: 4.5em; }
+  #prompt { font-size: 22px; font-weight: 600; min-height: 1.5em; }
+  .big { font-variant-numeric: tabular-nums; font-size: 18px; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  .badge { padding: 1px 8px; border-radius: 99px; font-size: 13px; border: 1px solid currentColor; white-space: nowrap; }
+  .badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); }
+  .detail { font-size: 13px; color: var(--muted); }
+  pre { margin: 0; white-space: pre-wrap; font-size: 13px; }
+  @media (min-width: 900px) { .charts { grid-template-columns: 1fr 1fr; } .charts .wide { grid-column: 1 / -1; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>XREAL IMU check</h1>
+  <span id="pill" class="pill">connecting…</span>
+  <span id="rate" class="muted"></span>
+  <div id="banner" hidden></div>
+</header>
+<main>
+  <section class="charts">
+    <div class="card">
+      <div class="chart-head"><h2>Gyro (rad/s, bias removed)</h2>
+        <div class="legend"><span class="x">X <b id="v-gx">–</b></span><span class="y">Y <b id="v-gy">–</b></span><span class="z">Z <b id="v-gz">–</b></span></div></div>
+      <canvas id="c-gyro"></canvas>
+    </div>
+    <div class="card">
+      <div class="chart-head"><h2>Accelerometer (m/s²)</h2>
+        <div class="legend"><span class="x">X <b id="v-ax">–</b></span><span class="y">Y <b id="v-ay">–</b></span><span class="z">Z <b id="v-az">–</b></span></div></div>
+      <canvas id="c-accel"></canvas>
+    </div>
+    <div class="card wide">
+      <div class="chart-head"><h2>Integrated angle (degrees since "Zero angles")</h2>
+        <div class="legend"><span class="x">X <b id="v-px">–</b></span><span class="y">Y <b id="v-py">–</b></span><span class="z">Z <b id="v-pz">–</b></span></div></div>
+      <canvas id="c-ang"></canvas>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>1. Calibrate</h2>
+    <div class="row">
+      <button id="btn-calib" class="primary">Calibrate (hold still 3 s)</button>
+      <button id="btn-zero">Zero angles</button>
+      <span id="calib-text" class="muted">Not calibrated. Wear the glasses, keep your head still, then press the button.</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>2. Run direction tests</h2>
+    <div id="prompt" class="muted">Calibrate first.</div>
+    <div id="note" class="detail"></div>
+    <div class="row" style="margin:8px 0">
+      <button id="btn-all" class="primary" disabled>Run all</button>
+      <button id="btn-stop" disabled>Stop</button>
+      <button id="btn-add">Add test</button>
+      <label><input type="checkbox" id="chk-voice" checked> Voice prompts</label>
+      <label>Angle tolerance ±<input type="number" id="tol" value="25" min="5" max="60"> %</label>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Motion</th><th>Direction</th><th>Target °</th><th>State</th><th>Measured</th><th>Check</th><th></th></tr></thead>
+        <tbody id="tests"></tbody>
+      </table>
+    </div>
+    <p class="detail">Each test: you move to the pose and hold still, the page measures the angle, then you return to centre and it
+      measures the way back. The angle is the gyro integrated over the move; the "gravity" figure is an independent check
+      from the accelerometer (it should match for pitch and roll and be near zero for yaw).</p>
+  </section>
+
+  <section class="card">
+    <h2>3. Result</h2>
+    <pre id="summary" class="muted">Run at least one test.</pre>
+    <div class="row" style="margin-top:8px">
+      <button id="btn-save" disabled>Save to captures/</button>
+      <button id="btn-download" disabled>Download JSON</button>
+      <button id="btn-record">Record raw session</button>
+      <span id="save-text" class="detail"></span>
+    </div>
+  </section>
+</main>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
