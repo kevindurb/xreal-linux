@@ -173,3 +173,23 @@ investigated. Nothing is shown on the glasses yet: the driver only receives fram
 onto the glasses' output (for example a fullscreen Wayland surface with `zwp_linux_dmabuf_v1`, which KWin advertises) and
 feeding the IMU into the pose. Whether the glasses have a true stereo side-by-side mode (needed to give each eye its own
 image) is still unverified.
+
+## Control and event traffic (passive capture while changing glasses settings)
+
+`tools/watch_control.py` listens (read-only, nothing is ever sent) on all ten TCP ports, the XREAL HID nodes, the button
+input devices, the DRM connector/EDID and udev. Run 1: the wearer opened the glasses' menu and switched into full SBS.
+
+- **Port 52999 is an event/status channel from the glasses to the host.** Messages are `27 <id> 00 00 00 <payload>`.
+  Seen: `8a` heartbeat every ~10 s with float32 values around 44-61 (probably temperatures, unconfirmed); `2e` bursts of
+  70-byte messages (two indices, a changing counter) at 18.8-29 s while the wearer was in the menu; a single `12`
+  message; and short 8-byte `66` and `3d` messages at and after the mode switch. Their meanings are unconfirmed.
+- **Changing display mode re-plugs the display, not the USB link.** The DRM connector went `disconnected` for about 1.8 s
+  and came back with a different EDID and a single mode `3840x1080` (full SBS). No TCP session dropped and no USB
+  re-enumeration was seen, so the IMU and control streams keep running across a mode change.
+- **Menu use produced no HID or input events** on the XREAL nodes (two pointer-type input nodes could not be read for
+  permission reasons), so any report of the menu or buttons is probably carried by the 52999 messages.
+- Port 52996's rate dropped from 4.6 kB/s to about 1.2-1.9 kB/s right after the mode switch (unexplained).
+- XRLinuxDriver names these display modes for the Air line: `1920x1080` at 60/72/90/120 Hz, SBS `3840x1080` at 60/72/90 Hz
+  and a half-SBS `1920x1080` at 60 Hz. It marks the 1S as SBS-capable but does not open its HID "MCU" controller for
+  One-series glasses, and neither it, xrealOneDeviceKit nor xreal_one_driver mention port 52999 or a display-mode command
+  for the One series. How to command the glasses (for example to enter SBS automatically) is therefore unknown.
