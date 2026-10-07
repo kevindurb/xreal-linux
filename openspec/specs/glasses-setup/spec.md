@@ -42,7 +42,7 @@ At least one display other than the glasses SHALL be enabled so Steam and SteamV
 
 ### Requirement: Session control
 
-`tools/vr_session.sh` SHALL start and stop the presenter and SteamVR together, restart only the presenter on request, report status, and pass options through (`XREAL_REPROJECT`, `XREAL_GUARD_MS`, `XREAL_EXTRA_ARGS`).
+`tools/vr_session.sh` SHALL start and stop the presenter and SteamVR together, restart only the presenter on request, report status, and pass options through (`XREAL_REPROJECT`, `XREAL_EXTRA_ARGS`).
 
 #### Scenario: Start with reprojection
 

@@ -56,12 +56,17 @@ The presenter SHALL sample only the valid bounds SteamVR reports for each eye's 
 
 ### Requirement: Do not show a frame SteamVR may still be drawing
 
-The presenter SHALL show a newly presented frame only once it is at least the configured age (`--guard-ms`; 4 ms by default, 8 ms in `tools/vr_session.sh`), and otherwise keep showing the previous frame.
+The presenter SHALL show the most recently presented frame, chosen after the swapchain image is acquired, and SHALL NOT read it until SteamVR's GPU work writing it has finished (waited on the GPU through the dma-buf's exported sync file, or on the CPU for up to 25 ms where the GPU cannot import one).
 
-#### Scenario: Frame just presented
+#### Scenario: Frame still being written
 
-- **WHEN** a frame was presented less than the guard time ago
-- **THEN** the previous frame is shown instead
+- **WHEN** SteamVR has presented a frame whose GPU work has not finished
+- **THEN** the presenter's read of that frame starts only after the work finishes
+
+#### Scenario: Older frames are never shown
+
+- **WHEN** a newer frame has been presented
+- **THEN** the presenter does not read an older swap image, which SteamVR may already be redrawing
 
 ### Requirement: Optional rotational reprojection
 
@@ -79,7 +84,7 @@ With `--reproject`, the presenter SHALL warp each eye by the head rotation betwe
 
 ### Requirement: Drive SteamVR's vsync from the real display
 
-The presenter SHALL tell the driver each time the swapchain returns an image (one message per display refresh) so that SteamVR's frame clock follows the glasses' actual refresh.
+The presenter SHALL tell the driver about each display refresh: with present wait, the time its previous frame reached the display (keeping one frame queued); otherwise when the swapchain returns an image. It SHALL also report the SteamVR frame it reads from, so the driver knows which older frames it has released.
 
 #### Scenario: Steady state
 
@@ -97,7 +102,7 @@ The presenter SHALL listen on the abstract unix socket `@xreal-presenter-<uid>` 
 
 ### Requirement: Debug capture and fence inspection
 
-The presenter SHALL provide `--dump DIR` to write the centre crop of both eyes' source images with per-frame metadata on request (by creating `DIR/trigger`), and `--wait-fences` to wait for the writer's dma-buf fence before using a frame.
+The presenter SHALL provide `--dump DIR` to write the centre crop of both eyes' source images with per-frame metadata on request (by creating `DIR/trigger`), waiting for the writer's dma-buf fence before reading each dumped frame.
 
 #### Scenario: Capturing a glitch
 

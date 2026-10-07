@@ -28,7 +28,15 @@ pub struct PoseState {
     pub q: [f32; 4], // w, x, y, z; world-from-body
     pub omega: [f32; 3], // angular velocity in the world frame, rad/s
     pub timestamp_ns: u64,
+    pub host_ns: u64, // CLOCK_MONOTONIC when the sample reached the host, the clock the driver measures pose age against
     pub valid: bool,
+}
+
+/// CLOCK_MONOTONIC in nanoseconds (std's Instant does not expose it).
+pub fn monotonic_ns() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
 fn qmul(a: Quat, b: Quat) -> Quat {
@@ -218,6 +226,7 @@ pub fn run_sim(pose: Arc<Mutex<PoseState>>, yaw_amplitude_deg: f64, pitch_offset
             q: [q[0] as f32, q[1] as f32, q[2] as f32, q[3] as f32],
             omega: [w[0] as f32, w[1] as f32, w[2] as f32],
             timestamp_ns: (t * 1e9) as u64,
+            host_ns: monotonic_ns(),
             valid: true,
         };
     }
@@ -248,6 +257,7 @@ pub fn run(pose: Arc<Mutex<PoseState>>) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => buf.extend_from_slice(&chunk[..n]),
             }
+            let arrived = monotonic_ns();
             for (ts, g, a) in parse_records(&mut buf) {
                 fusion.update(ts, g, a);
                 if fusion.ready() {
@@ -256,6 +266,7 @@ pub fn run(pose: Arc<Mutex<PoseState>>) {
                         q: [q[0] as f32, q[1] as f32, q[2] as f32, q[3] as f32],
                         omega: [w[0] as f32, w[1] as f32, w[2] as f32],
                         timestamp_ns: ts,
+                        host_ns: arrived,
                         valid: true,
                     };
                 }

@@ -21,9 +21,11 @@
 #include <math.h>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -42,6 +44,14 @@ static void Log(const char *fmt, ...) {
     vr::VRDriverLog()->Log(buf);
 }
 
+// CLOCK_MONOTONIC in libstdc++, the same clock the presenter stamps its vblank and pose times with.
+static int64_t NowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Valve's "running start": vsync is declared this far ahead of the real vblank so SteamVR starts each frame with headroom.
+static const int64_t kRunningStartNs = 2'000'000;
+
 // Vulkan values we need without including vulkan.h
 static const uint32_t kUsageTransferSrc = 0x1, kUsageSampled = 0x4, kUsageInputAttachment = 0x80;
 static const uint32_t kCreateMutableFormat = 0x8;
@@ -54,14 +64,20 @@ static const uint32_t kUsageFlags = kUsageTransferSrc | kUsageSampled | kUsageIn
 //   type 1 SET:     [1, set_id, width, height, vk_format, usage, create_flags]   + 3 fds
 //   type 2 DESTROY: [2, set_id]
 //   type 3 PRESENT: [3, left_set, left_index, right_set, right_index, frame_number]
-enum MsgType : uint32_t { kMsgSet = 1, kMsgDestroy = 2, kMsgPresent = 3 };
+// and from the presenter:
+//   type 4 POSE:    [4, imu_ts_lo, imu_ts_hi, w, x, y, z, valid, wx, wy, wz, host_ns_lo, host_ns_hi]
+//   type 5 VBLANK:  [5, sequence, monotonic_ns_lo, monotonic_ns_hi]   (0 ns: the time of arrival is the best estimate)
+//   type 6 USING:   [6, frame_number]   it reads that frame from now on and has released every older one
+enum MsgType : uint32_t { kMsgSet = 1, kMsgDestroy = 2, kMsgPresent = 3, kMsgPose = 4, kMsgVblank = 5, kMsgUsing = 6 };
 
 class PresenterLink {
 public:
     ~PresenterLink() { Close(); }
 
     int Fd() const { return fd_; }
+    bool IsOpen() const { return fd_ >= 0; }
 
+    // Opens the connection if needed (at most every 500 ms); only the pose thread calls this, to keep syscalls off SteamVR's thread.
     bool Connected() {
         if (fd_ >= 0) return true;
         auto now = std::chrono::steady_clock::now();
@@ -132,13 +148,15 @@ private:
 };
 
 struct Settings {
-    int renderWidth = 1920, renderHeight = 1080;  // per eye
+    int renderWidth = 1280, renderHeight = 720;  // per eye; 1920x1080 saturates the Steam Deck's GPU
     int windowWidth = 3840, windowHeight = 1080;  // both eyes side by side on the glasses
     float refreshHz = 60.f;
     float ipd = 0.063f;
     float headHeight = 1.5f;  // metres above the floor in SteamVR's standing space
     bool sendAngularVelocity = true;  // lets SteamVR predict ahead; settable for diagnosing glitches
     bool headModel = true;            // lets SteamVR add head/neck translation from rotation
+    bool holdAfterPresent = true;     // pace SteamVR in PostPresent; settable to compare with and without
+    float vsyncToPhotons = -1.f;      // seconds; negative means the pipeline's known part (see VsyncToPhotons)
     std::string serial = "XREAL-PROTOTYPE-0001";
     std::string model = "XREAL 1S";
 
@@ -162,7 +180,35 @@ struct Settings {
         if (e == vr::VRSettingsError_None) sendAngularVelocity = b;
         b = s->GetBool("driver_xreal", "head_model", &e);
         if (e == vr::VRSettingsError_None) headModel = b;
+        b = s->GetBool("driver_xreal", "hold_after_present", &e);
+        if (e == vr::VRSettingsError_None) holdAfterPresent = b;
+        float v = s->GetFloat("driver_xreal", "seconds_from_vsync_to_photons", &e);
+        if (e == vr::VRSettingsError_None) vsyncToPhotons = v;
     }
+
+    int64_t PeriodNs() const { return (int64_t)(1e9 / refreshHz); }
+
+    // The declared vsync is a running start before the real vblank, and the presenter shows a frame one refresh after the vblank
+    // it picks it up at; the panel's own latency is not measured, so it is left out unless set.
+    float VsyncToPhotons() const { return vsyncToPhotons >= 0 ? vsyncToPhotons : kRunningStartNs / 1e9f + 1.f / refreshHz; }
+};
+
+// Shared by the vsync announcer and PostPresent.
+struct Pacing {
+    int64_t periodNs = 0;
+    bool holdAfterPresent = true;
+    std::atomic<int64_t> lastTickNs{0};  // the real vblank whose vsync was most recently declared to SteamVR
+};
+
+// What one poll of the presenter link produced.
+struct PresenterInput {
+    double q[4] = {1, 0, 0, 0};
+    double omega[3] = {0, 0, 0};
+    bool tracked = false;
+    bool newPose = false;
+    int64_t sampleNs = 0;  // when the newest pose was sampled, 0 if unknown
+    int64_t vblankNs = 0;  // the newest vblank reported, 0 if none
+
 };
 
 static float BitsToFloat(uint32_t b) { float f; memcpy(&f, &b, 4); return f; }
@@ -221,6 +267,7 @@ private:
 // ---- direct mode: swap textures come from SteamVR as dma-bufs ----------------------------------
 class DirectModeComponent : public vr::IVRDriverDirectModeComponent {
 public:
+    explicit DirectModeComponent(Pacing &pacing) : pacing_(pacing) {}
     ~DirectModeComponent() { DestroyAllSwapTextureSets(0, true); }
 
     void CreateSwapTextureSet(uint32_t pid, const SwapTextureSetDesc_t *desc, SwapTextureSet_t *out) override {
@@ -256,7 +303,7 @@ public:
         raw->id = nextSetId_++;
         for (int i = 0; i < 3; i++) byHandle_[raw->handles[i]] = {raw, i};
         sets_.push_back(raw);
-        if (link_.Connected()) SendSet(*raw);
+        if (link_.IsOpen()) SendSet(*raw);
     }
 
     void DestroySwapTextureSet(vr::SharedTextureHandle_t handle) override {
@@ -265,19 +312,14 @@ public:
         if (it == byHandle_.end()) return;
         Log("DestroySwapTextureSet set %u (%ux%u)", it->second.first->id, it->second.first->desc.nWidth, it->second.first->desc.nHeight);
         DestroyLocked(it->second.first);
+        released_.notify_all();
     }
 
     void DestroyAllSwapTextureSets(uint32_t pid) override { DestroyAllSwapTextureSets(pid, false); }
 
     void GetNextSwapTextureSetIndex(vr::SharedTextureHandle_t handles[2], uint32_t (*indices)[2]) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (int eye = 0; eye < 2; eye++) {
-            auto it = byHandle_.find(handles[eye]);
-            if (it == byHandle_.end()) { (*indices)[eye] = 0; continue; }
-            TextureSet *set = it->second.first;
-            set->next = (set->next + 1) % 3;
-            (*indices)[eye] = set->next;
-        }
+        std::unique_lock<std::mutex> lock(mutex_);
+        for (int eye = 0; eye < 2; eye++) (*indices)[eye] = NextFreeIndexLocked(lock, handles[eye], eye);
     }
 
     void SubmitLayer(const SubmitLayerPerEye_t (&perEye)[2]) override {
@@ -304,8 +346,11 @@ public:
             Log("layers %d -> %d at Present #%u (sets %u/%u)", lastLayerCount_, layerCount_, presents_, setId[0], setId[1]);
         }
         lastLayerCount_ = layerCount_;
-        if (setId[0] == 0 || setId[1] == 0) Log("Present #%u: layer 0 refers to an unknown texture (left %u right %u)", presents_, setId[0], setId[1]);
-        if (link_.Connected()) {
+        if ((setId[0] == 0 || setId[1] == 0) && unknownTextureLogs_ < 20) {
+            unknownTextureLogs_++;
+            Log("Present #%u: layer 0 refers to an unknown texture (left %u right %u)", presents_, setId[0], setId[1]);
+        }
+        if (link_.IsOpen()) {
             ResyncIfNew();
             if (setId[0] && setId[1]) {
                 uint32_t m[16] = {kMsgPresent, setId[0], index[0], setId[1], index[1], presents_};
@@ -327,46 +372,62 @@ public:
                     const vr::VRTextureBounds_t &l = layer0_[0].bounds, &r = layer0_[1].bounds;
                     Log("Present #%u: PARTIAL bounds left u %.3f-%.3f v %.3f-%.3f right u %.3f-%.3f v %.3f-%.3f", presents_, l.uMin, l.uMax, l.vMin, l.vMax, r.uMin, r.uMax, r.vMin, r.vMax);
                 }
-                link_.Send(m);
+                if (link_.Send(m)) {
+                    offered_.push_back({presents_, {setId[0], setId[1]}, {index[0], index[1]}});
+                    if (offered_.size() > 8) offered_.pop_front();   // a presenter that never sends USING releases nothing
+                }
             }
         }
         layerCount_ = 0;
     }
 
-    void PostPresent(const Throttling_t *) override {}
+    // Valve's direct-mode guidance: hold SteamVR here until the next running start, so its next frame starts on the display's
+    // schedule rather than as soon as this one is presented.
+    void PostPresent(const Throttling_t *throttling) override {
+        int64_t last = pacing_.lastTickNs.load();
+        if (!pacing_.holdAfterPresent || last == 0) return;
+        uint32_t extra = throttling ? throttling->nFramesToThrottle : 0;
+        int64_t wait = last + pacing_.periodNs * (1 + extra) - kRunningStartNs - NowNs();
+        if (wait > 0) std::this_thread::sleep_for(std::chrono::nanoseconds(wait));
+    }
 
-    // Wait up to timeoutMs for the presenter, then read everything it sent. Fills the latest head orientation (w, x, y, z)
-    // and world angular velocity, and counts the vsync notifications received. Returns true if the pose is valid.
-    bool PollMessages(double q[4], double omega[3], int &vsyncs, int timeoutMs) {
-        vsyncs = 0;
+    // Wait up to timeoutMs for the presenter, then read everything it sent.
+    void PollMessages(PresenterInput &in, int timeoutMs) {
         int fd;
         { std::lock_guard<std::mutex> lock(mutex_); fd = link_.Connected() ? link_.Fd() : -1; }
-        if (fd < 0) { std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs)); return false; }
+        if (fd < 0) { std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs)); return; }
         pollfd pfd{fd, POLLIN, 0};
         poll(&pfd, 1, timeoutMs);
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!link_.Connected()) return false;
+        if (!link_.IsOpen()) return;
         ResyncIfNew();
         uint32_t w[16];
         int r;
         while ((r = link_.Recv(w)) > 0) {
-            if (w[0] == 4) {
+            if (w[0] == kMsgPose) {
                 for (int i = 0; i < 4; i++) pose_[i] = BitsToFloat(w[3 + i]);
                 for (int i = 0; i < 3; i++) omega_[i] = BitsToFloat(w[8 + i]);
                 poseValid_ = w[7] != 0;
-            } else if (w[0] == 5) {
-                vsyncs++;
+                in.sampleNs = (int64_t)((uint64_t)w[11] | ((uint64_t)w[12] << 32));
+                in.newPose = true;
+            } else if (w[0] == kMsgVblank) {
+                int64_t t = (int64_t)((uint64_t)w[2] | ((uint64_t)w[3] << 32));
+                in.vblankNs = t ? t : NowNs();
+            } else if (w[0] == kMsgUsing) {
+                presenterReleases_ = true;
+                while (!offered_.empty() && (int32_t)(offered_.front().frame - w[1]) < 0) offered_.pop_front();
+                released_.notify_all();
             }
         }
-        if (r < 0) poseValid_ = false;
-        for (int i = 0; i < 4; i++) q[i] = pose_[i];
-        for (int i = 0; i < 3; i++) omega[i] = omega_[i];
-        return poseValid_;
+        if (r < 0) ForgetPresenterLocked();
+        in.tracked = poseValid_;
+        for (int i = 0; i < 4; i++) in.q[i] = pose_[i];
+        for (int i = 0; i < 3; i++) in.omega[i] = omega_[i];
     }
 
     void GetFrameTiming(vr::DriverDirectMode_FrameTiming *t) override {
-        t->m_nSize = sizeof(vr::DriverDirectMode_FrameTiming);
-        t->m_nNumFramePresents = presents_;
+        if (t->m_nSize < sizeof(vr::DriverDirectMode_FrameTiming)) return;
+        t->m_nNumFramePresents = 1;   // times *this* frame was shown, not a running total
         t->m_nNumMisPresented = 0;
         t->m_nNumDroppedFrames = 0;
         t->m_nReprojectionFlags = 0;
@@ -382,6 +443,13 @@ private:
         uint32_t next = 0;
     };
 
+    // A frame sent to the presenter, which may read it until it reports using a newer one.
+    struct Offered {
+        uint32_t frame;
+        uint32_t set[2];
+        uint32_t index[2];
+    };
+
     static void Release(TextureSet &set) {
         for (int i = 0; i < 3; i++) {
             if (set.fds[i] >= 0) { close(set.fds[i]); set.fds[i] = -1; }
@@ -389,10 +457,44 @@ private:
         }
     }
 
+    bool HeldLocked(uint32_t setId, uint32_t index, int eye) const {
+        if (!presenterReleases_) return false;
+        for (const Offered &o : offered_)
+            if (o.set[eye] == setId && o.index[eye] == index) return true;
+        return false;
+    }
+
+    // The next image of the set the presenter is not reading. Waits for a release if all are held, and after about a refresh
+    // and a half reclaims the oldest, so a stalled presenter cannot stop SteamVR.
+    uint32_t NextFreeIndexLocked(std::unique_lock<std::mutex> &lock, vr::SharedTextureHandle_t handle, int eye) {
+        auto timeout = std::chrono::nanoseconds(pacing_.periodNs * 3 / 2);
+        for (;;) {
+            auto it = byHandle_.find(handle);
+            if (it == byHandle_.end()) return 0;
+            TextureSet *set = it->second.first;
+            for (uint32_t k = 1; k <= 3; k++) {
+                uint32_t i = (set->next + k) % 3;
+                if (!HeldLocked(set->id, i, eye)) { set->next = i; return i; }
+            }
+            if (released_.wait_for(lock, timeout) == std::cv_status::timeout && !offered_.empty()) {
+                if (reclaimLogs_ < 20) { reclaimLogs_++; Log("presenter held every image of set %u; reclaiming frame %u", set->id, offered_.front().frame); }
+                offered_.pop_front();
+            }
+        }
+    }
+
+    void ForgetPresenterLocked() {
+        poseValid_ = false;
+        offered_.clear();
+        presenterReleases_ = false;
+        released_.notify_all();
+    }
+
     // A presenter that started later (or restarted) needs every existing set again.
     void ResyncIfNew() {
-        if (link_.TakeJustConnected())
-            for (auto *s : sets_) SendSet(*s);
+        if (!link_.TakeJustConnected()) return;
+        ForgetPresenterLocked();
+        for (auto *s : sets_) SendSet(*s);
     }
 
     void SendSet(const TextureSet &s) {
@@ -401,7 +503,7 @@ private:
     }
 
     void DestroyLocked(TextureSet *set) {
-        if (link_.Connected()) { uint32_t m[16] = {kMsgDestroy, set->id}; link_.Send(m); }
+        if (link_.IsOpen()) { uint32_t m[16] = {kMsgDestroy, set->id}; link_.Send(m); }
         for (int i = 0; i < 3; i++) byHandle_.erase(set->handles[i]);
         for (size_t i = 0; i < sets_.size(); i++)
             if (sets_[i] == set) { sets_.erase(sets_.begin() + i); break; }
@@ -414,11 +516,16 @@ private:
         std::vector<TextureSet *> victims;
         for (auto *s : sets_) if (all || s->pid == pid) victims.push_back(s);
         for (auto *s : victims) DestroyLocked(s);
+        released_.notify_all();
     }
 
+    Pacing &pacing_;
     std::mutex mutex_;
+    std::condition_variable released_;
     std::vector<TextureSet *> sets_;
     std::map<vr::SharedTextureHandle_t, std::pair<TextureSet *, int>> byHandle_;
+    std::deque<Offered> offered_;
+    bool presenterReleases_ = false;  // only a presenter that sends USING has images held for it
     SubmitLayerPerEye_t layer0_[2]{};
     int layerCount_ = 0;
     uint32_t presents_ = 0;
@@ -426,6 +533,8 @@ private:
     int lastLayerCount_ = -1;
     int layerChangeLogs_ = 0;
     int partialBoundsLogs_ = 0;
+    int unknownTextureLogs_ = 0;
+    int reclaimLogs_ = 0;
     PresenterLink link_;
     double pose_[4] = {1, 0, 0, 0};
     double omega_[3] = {0, 0, 0};
@@ -437,8 +546,10 @@ class HmdDevice : public vr::ITrackedDeviceServerDriver {
 public:
     HmdDevice() {
         settings_.Load();
+        pacing_.periodNs = settings_.PeriodNs();
+        pacing_.holdAfterPresent = settings_.holdAfterPresent;
         display_ = std::make_unique<DisplayComponent>(settings_);
-        direct_ = std::make_unique<DirectModeComponent>();
+        direct_ = std::make_unique<DirectModeComponent>(pacing_);
     }
 
     const std::string &Serial() const { return settings_.serial; }
@@ -453,13 +564,14 @@ public:
         p->SetFloatProperty(c, vr::Prop_UserIpdMeters_Float, settings_.ipd);
         p->SetFloatProperty(c, vr::Prop_DisplayFrequency_Float, settings_.refreshHz);
         p->SetFloatProperty(c, vr::Prop_UserHeadToEyeDepthMeters_Float, 0.f);
-        p->SetFloatProperty(c, vr::Prop_SecondsFromVsyncToPhotons_Float, 0.011f);
+        p->SetFloatProperty(c, vr::Prop_SecondsFromVsyncToPhotons_Float, settings_.VsyncToPhotons());
         p->SetBoolProperty(c, vr::Prop_IsOnDesktop_Bool, false);
         p->SetBoolProperty(c, vr::Prop_HasDisplayComponent_Bool, true);
         p->SetBoolProperty(c, vr::Prop_HasDriverDirectModeComponent_Bool, true);
         p->SetBoolProperty(c, vr::Prop_DriverDirectModeSendsVsyncEvents_Bool, true);
-        Log("HMD activated as device %u (%dx%d per eye, %.1f Hz, direct mode; angular velocity %s, head model %s)", id, settings_.renderWidth,
-            settings_.renderHeight, settings_.refreshHz, settings_.sendAngularVelocity ? "on" : "off", settings_.headModel ? "on" : "off");
+        Log("HMD activated as device %u (%dx%d per eye, %.1f Hz, direct mode; angular velocity %s, head model %s, hold after present %s, vsync to photons %.4f s)",
+            id, settings_.renderWidth, settings_.renderHeight, settings_.refreshHz, settings_.sendAngularVelocity ? "on" : "off",
+            settings_.headModel ? "on" : "off", settings_.holdAfterPresent ? "on" : "off", settings_.VsyncToPhotons());
         pose_thread_ = std::thread([this] { PoseLoop(); });
         vsync_thread_ = std::thread([this] { VsyncLoop(); });
         return vr::VRInitError_None;
@@ -512,35 +624,39 @@ private:
         return pose;
     }
 
-    // Reports the pose to SteamVR whenever the presenter sends one, and turns the presenter's vblank notifications
-    // into vsync events. Waiting on the socket (not a timer) keeps SteamVR's frame clock locked to the real display.
+    // Reports each new pose from the presenter, stamped with its age so SteamVR predicts from when it was sampled.
     void PoseLoop() {
+        int64_t lastUpdate = 0;
         while (active_) {
-            double q[4], omega[3];
-            int vsyncs = 0;
-            bool tracked = direct_->PollMessages(q, omega, vsyncs, 2);
-            if (vsyncs > 0) {
-                vr::VRServerDriverHost()->VsyncEvent(0.0);   // one per wake-up; a burst must not become back-to-back events
-                lastPresenterVsyncNs_ = NowNs();
-            }
-            vr::DriverPose_t pose = MakePose(tracked, q, omega);
-            if (tracked) { std::lock_guard<std::mutex> lock(poseMutex_); lastPose_ = pose; havePose_ = true; }
+            PresenterInput in;
+            direct_->PollMessages(in, 2);
+            if (in.vblankNs) lastVblankNs_ = in.vblankNs;
+            int64_t now = NowNs();
+            // Without a new sample there is nothing to tell SteamVR, apart from a periodic update that keeps the headset alive.
+            if (!in.newPose && now - lastUpdate < 100'000'000) continue;
+            vr::DriverPose_t pose = MakePose(in.tracked, in.q, in.omega);
+            if (in.tracked && in.sampleNs > 0 && in.sampleNs < now) pose.poseTimeOffset = (in.sampleNs - now) / 1e9;
+            if (in.tracked) { std::lock_guard<std::mutex> lock(poseMutex_); lastPose_ = pose; havePose_ = true; }
             vr::VRServerDriverHost()->TrackedDevicePoseUpdated(id_, pose, sizeof(vr::DriverPose_t));
+            lastUpdate = now;
         }
     }
 
-    static int64_t NowNs() {
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    }
-
-    // Fallback clock: only fires while the presenter is not supplying vsync (not running, or not yet connected).
+    // Declares each vsync to SteamVR a running start before the glasses' real vblank as the presenter reports it, and free-runs
+    // at the configured rate while the presenter reports none.
     void VsyncLoop() {
-        auto period = std::chrono::duration<double>(1.0 / settings_.refreshHz);
-        auto next = std::chrono::steady_clock::now();
+        const int64_t period = pacing_.periodNs;
+        int64_t tick = NowNs() + period, lastTick = 0;
         while (active_) {
-            next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
-            std::this_thread::sleep_until(next);
-            if (NowNs() - lastPresenterVsyncNs_ > 100'000'000) vr::VRServerDriverHost()->VsyncEvent(0.0);
+            int64_t now = NowNs(), vblank = lastVblankNs_;
+            if (vblank && now - vblank < 100'000'000) tick = vblank + period;
+            while (tick - kRunningStartNs <= now || tick - lastTick < period / 2) tick += period;
+            int64_t announce = tick - kRunningStartNs;
+            std::this_thread::sleep_for(std::chrono::nanoseconds(announce - now));
+            if (!active_) break;
+            vr::VRServerDriverHost()->VsyncEvent((announce - NowNs()) / 1e9);
+            pacing_.lastTickNs = tick;
+            lastTick = tick;
         }
     }
 
@@ -549,7 +665,8 @@ private:
     std::unique_ptr<DirectModeComponent> direct_;
     uint32_t id_ = vr::k_unTrackedDeviceIndexInvalid;
     std::atomic<bool> active_{false};
-    std::atomic<int64_t> lastPresenterVsyncNs_{0};
+    Pacing pacing_;
+    std::atomic<int64_t> lastVblankNs_{0};
     std::mutex poseMutex_;
     vr::DriverPose_t lastPose_ = {};
     bool havePose_ = false;

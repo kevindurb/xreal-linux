@@ -4,7 +4,7 @@
 //! glasses really show a different image to each eye in their SBS mode. It will grow into the thing that imports
 //! SteamVR's per-eye textures and presents them.
 //!
-//! usage: xreal-presenter [--monitor NAME] [--reproject] [--guard-ms N] [--wait-fences] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default monitor name: DP-1)
+//! usage: xreal-presenter [--monitor NAME] [--reproject] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default monitor name: DP-1)
 //!
 //! Left half of the screen = left eye (red tint), right half = right eye (blue tint). A green square slides across
 //! each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
@@ -27,23 +27,20 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Fullscreen, Window, WindowId};
 
-/// Ask the kernel whether the GPU work that writes this dma-buf has finished (DMA_BUF_IOCTL_EXPORT_SYNC_FILE).
-/// Returns (supported, still_pending_after_waiting, milliseconds_waited). `timeout_ms` of 0 only checks.
-fn fence_state(dmabuf_fd: RawFd, timeout_ms: i32) -> (bool, bool, f32) {
+/// Sync file for the GPU work still writing this dma-buf (DMA_BUF_IOCTL_EXPORT_SYNC_FILE), or None if the kernel can't export it.
+fn export_write_fence(dmabuf_fd: RawFd) -> Option<RawFd> {
     #[repr(C)]
     struct ExportSyncFile { flags: u32, fd: i32 }
     const DMA_BUF_IOCTL_EXPORT_SYNC_FILE: libc::c_ulong = 0xC008_6202; // _IOWR('b', 2, struct dma_buf_export_sync_file)
     let mut req = ExportSyncFile { flags: 1, fd: -1 }; // DMA_BUF_SYNC_READ: wait for the writers
-    unsafe {
-        if libc::ioctl(dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &mut req) != 0 || req.fd < 0 {
-            return (false, false, 0.0);
-        }
-        let t = Instant::now();
-        let mut p = libc::pollfd { fd: req.fd, events: libc::POLLIN, revents: 0 };
-        let r = libc::poll(&mut p, 1, timeout_ms);
-        libc::close(req.fd);
-        (true, r == 0, t.elapsed().as_secs_f32() * 1000.0)
-    }
+    let ok = unsafe { libc::ioctl(dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &mut req) } == 0;
+    (ok && req.fd >= 0).then_some(req.fd)
+}
+
+/// Wait up to `timeout_ms` for a sync file to signal; returns whether it is still pending. 0 only checks.
+fn sync_file_pending(fd: RawFd, timeout_ms: i32) -> bool {
+    let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    unsafe { libc::poll(&mut p, 1, timeout_ms) == 0 }
 }
 
 /// fd of the connection to the driver (or -1); lets the render thread send vsync messages.
@@ -88,7 +85,6 @@ struct Shared {
     sets: HashMap<u32, SetInfo>,
     destroyed: Vec<u32>,
     present: Option<PresentMsg>,
-    previous: Option<PresentMsg>, // the frame before `present`, which is certain to be complete
     connected: bool,
 }
 
@@ -127,16 +123,23 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
             println!("driver connected (pid {})", cred.pid);
             DRIVER_FD.store(c, Ordering::Relaxed);
             shared.lock().unwrap().connected = true;
-            // Stream the head pose to the driver (type 4: [4, ts_lo, ts_hi, w, x, y, z as f32 bits, valid, wx, wy, wz as f32 bits]).
+            // Stream the head pose to the driver (type 4: [4, ts_lo, ts_hi, w, x, y, z as f32 bits, valid, wx, wy, wz as f32 bits, host_ns_lo, host_ns_hi]).
             let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
             {
                 let (alive, pose) = (alive.clone(), pose.clone());
                 std::thread::spawn(move || {
+                    let (mut last_sample, mut last_valid, mut last_sent) = (0u64, false, Instant::now());
                     while alive.load(std::sync::atomic::Ordering::Relaxed) {
                         std::thread::sleep(std::time::Duration::from_millis(2));
                         let p = *pose.lock().unwrap();
+                        // Only new samples (or a change of validity), plus an occasional repeat so the driver sees the link is alive.
+                        if p.host_ns == last_sample && p.valid == last_valid && last_sent.elapsed() < std::time::Duration::from_millis(50) {
+                            continue;
+                        }
+                        (last_sample, last_valid, last_sent) = (p.host_ns, p.valid, Instant::now());
                         let w: [u32; 16] = [4, p.timestamp_ns as u32, (p.timestamp_ns >> 32) as u32, p.q[0].to_bits(), p.q[1].to_bits(),
-                                            p.q[2].to_bits(), p.q[3].to_bits(), p.valid as u32, p.omega[0].to_bits(), p.omega[1].to_bits(), p.omega[2].to_bits(), 0, 0, 0, 0, 0];
+                                            p.q[2].to_bits(), p.q[3].to_bits(), p.valid as u32, p.omega[0].to_bits(), p.omega[1].to_bits(), p.omega[2].to_bits(),
+                                            p.host_ns as u32, (p.host_ns >> 32) as u32, 0, 0, 0];
                         let n = unsafe { libc::send(c, w.as_ptr() as *const _, 64, libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT) };
                         if n < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock {
                             break;
@@ -183,7 +186,6 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
                     }
                     2 => sh.destroyed.push(words[1]),
                     3 => {
-                        sh.previous = sh.present;
                         let q = [f32::from_bits(words[6]), f32::from_bits(words[7]), f32::from_bits(words[8]), f32::from_bits(words[9])];
                         let render_q = if q.iter().all(|v| v.is_finite()) && q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3] > 0.5 { Some(q) } else { None };
                         let unpack = |lo: u32, hi: u32| [(lo & 0xffff) as f32 / 65535.0, (lo >> 16) as f32 / 65535.0, (hi & 0xffff) as f32 / 65535.0, (hi >> 16) as f32 / 65535.0];
@@ -208,7 +210,6 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
             let ids: Vec<u32> = sh.sets.keys().copied().collect();
             sh.destroyed.extend(ids);
             sh.present = None;
-            sh.previous = None;
             sh.connected = false;
         }
     }
@@ -231,11 +232,10 @@ struct Eyes {
     bounds: [[f32; 4]; 2],
     frame: u32,            // SteamVR's present counter for this frame
     slot: (u32, u32),      // left eye (set id, index)
-    used_previous: bool,   // the frame-age guard picked the previous frame
     age_ms: f32,           // how old the chosen frame was
     fence_supported: bool, // the kernel could export the writer's fence
-    fence_pending: bool,   // the writer had not finished when we looked (after any wait)
-    fence_ms: f32,         // how long we waited for it
+    fence_pending: bool,   // the writer had not finished when we looked
+    wait_fds: [RawFd; 2],  // per eye: the writer's sync file for the GPU to wait on, or -1
 }
 
 struct Gfx {
@@ -267,14 +267,18 @@ struct Gfx {
     dump_remaining: u32,
     dump_count: u32,
     dump_index: u32,
-    wait_fences: bool,
     pub fallbacks: u32,  // frames drawn as the test pattern while the driver was connected (should stay 0)
-    guard_ms: u64,       // how old a presented frame must be before we show it
     last_delta_deg: f32, // head rotation between SteamVR's render pose and now, last warped frame
+    semaphore_fd: Option<khr::external_semaphore_fd::Device>, // None: the GPU cannot wait on sync files, so the CPU waits
+    read_ready: [vk::Semaphore; 2], // per eye: carries the writer's sync file into our submission
+    present_wait: Option<khr::present_wait::Device>, // None: vblank times are estimated from acquire instead
+    present_id: u64,              // id of our last present, 0 when there is none to wait for
+    present_wait_timeouts: u32,   // consecutive timeouts; the compositor may not report presentation
+    used_frame: Option<(RawFd, u32)>, // driver connection and SteamVR frame last reported as in use
 }
 
 impl Gfx {
-    unsafe fn new(window: &Window, reproject: bool, guard_ms: u64) -> Result<Gfx, Box<dyn std::error::Error>> {
+    unsafe fn new(window: &Window, reproject: bool) -> Result<Gfx, Box<dyn std::error::Error>> {
         let entry = Entry::load()?;
         let display = window.display_handle()?.as_raw();
         let win = window.window_handle()?.as_raw();
@@ -307,13 +311,33 @@ impl Gfx {
 
         let prio = [1.0f32];
         let qci = [vk::DeviceQueueCreateInfo::default().queue_family_index(queue_family).queue_priorities(&prio)];
-        let dev_exts = [khr::swapchain::NAME.as_ptr(), khr::external_memory_fd::NAME.as_ptr()];
-        let mut f13 = vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true);
-        let device = instance.create_device(
+        let available = instance.enumerate_device_extension_properties(phys)?;
+        let has_ext = |name: &CStr| available.iter().any(|e| e.extension_name_as_c_str() == Ok(name));
+        let has_semaphore_fd = has_ext(khr::external_semaphore_fd::NAME);
+        let mut sem_props = vk::ExternalSemaphoreProperties::default();
+        instance.get_physical_device_external_semaphore_properties(
             phys,
-            &vk::DeviceCreateInfo::default().queue_create_infos(&qci).enabled_extension_names(&dev_exts).push_next(&mut f13),
-            None,
-        )?;
+            &vk::PhysicalDeviceExternalSemaphoreInfo::default().handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD),
+            &mut sem_props,
+        );
+        let gpu_waits = has_semaphore_fd && sem_props.external_semaphore_features.contains(vk::ExternalSemaphoreFeatureFlags::IMPORTABLE);
+        println!("waiting for SteamVR's writes on the {}", if gpu_waits { "GPU" } else { "CPU (no sync-file semaphore import)" });
+        let mut dev_exts = vec![khr::swapchain::NAME.as_ptr(), khr::external_memory_fd::NAME.as_ptr()];
+        if gpu_waits { dev_exts.push(khr::external_semaphore_fd::NAME.as_ptr()); }
+        let (mut id_feat, mut wait_feat) = (vk::PhysicalDevicePresentIdFeaturesKHR::default(), vk::PhysicalDevicePresentWaitFeaturesKHR::default());
+        if has_ext(khr::present_id::NAME) && has_ext(khr::present_wait::NAME) {
+            let mut f2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut id_feat).push_next(&mut wait_feat);
+            instance.get_physical_device_features2(phys, &mut f2);
+        }
+        let present_waits = id_feat.present_id == vk::TRUE && wait_feat.present_wait == vk::TRUE;
+        println!("vblank times from {}", if present_waits { "present wait" } else { "acquire (no present wait)" });
+        if present_waits { dev_exts.extend([khr::present_id::NAME.as_ptr(), khr::present_wait::NAME.as_ptr()]); }
+        let mut f13 = vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true);
+        let mut id_on = vk::PhysicalDevicePresentIdFeaturesKHR::default().present_id(true);
+        let mut wait_on = vk::PhysicalDevicePresentWaitFeaturesKHR::default().present_wait(true);
+        let mut dci = vk::DeviceCreateInfo::default().queue_create_infos(&qci).enabled_extension_names(&dev_exts).push_next(&mut f13);
+        if present_waits { dci = dci.push_next(&mut id_on).push_next(&mut wait_on); }
+        let device = instance.create_device(phys, &dci, None)?;
         let mem_props = instance.get_physical_device_memory_properties(phys);
         let queue = device.get_device_queue(queue_family, 0);
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
@@ -328,12 +352,19 @@ impl Gfx {
         )?[0];
         let image_available = device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?;
         let in_flight = device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)?;
+        let read_ready = [
+            device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?,
+            device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?,
+        ];
+        let semaphore_fd = gpu_waits.then(|| khr::external_semaphore_fd::Device::new(&instance, &device));
+        let present_wait = present_waits.then(|| khr::present_wait::Device::new(&instance, &device));
 
         let mut g = Gfx {
             _entry: entry, instance, surface_loader, surface, phys, device, queue, queue_family, swapchain_loader,
             swapchain: vk::SwapchainKHR::null(), images: vec![], views: vec![], format: vk::Format::B8G8R8A8_UNORM,
             extent: vk::Extent2D { width: 1, height: 1 }, pool, cmd, image_available, render_done: vec![], in_flight,
-            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, wait_fences: false, fallbacks: 0, guard_ms, last_delta_deg: 0.0,
+            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, fallbacks: 0, last_delta_deg: 0.0,
+            semaphore_fd, read_ready, present_wait, present_id: 0, present_wait_timeouts: 0, used_frame: None,
         };
         g.create_swapchain(window.inner_size())?;
         if reproject {
@@ -366,6 +397,7 @@ impl Gfx {
         };
         let count = (caps.min_image_count + 1).min(if caps.max_image_count == 0 { u32::MAX } else { caps.max_image_count });
         let old = self.swapchain;
+        self.present_id = 0;
         self.swapchain = self.swapchain_loader.create_swapchain(
             &vk::SwapchainCreateInfoKHR::default()
                 .surface(self.surface)
@@ -683,11 +715,8 @@ impl Gfx {
                 }
             }
         }
-        // SteamVR calls Present when it has *submitted* the GPU work, not when it has finished, and nothing here waits on its
-        // fences. Use a new frame only once it is a few ms old and otherwise show the previous, certainly complete one.
-        let latest = sh.present?;
-        let use_latest = latest.at.elapsed() >= std::time::Duration::from_millis(self.guard_ms);
-        let p = if use_latest { latest } else { sh.previous.unwrap_or(latest) };
+        // Always the newest frame: SteamVR redraws a swap image two presents later, so an older one may be mid-draw when we read it.
+        let p = sh.present?;
         let mut out = [(vk::Image::null(), 0u32, 0u32); 2];
         let mut sets = [vk::DescriptorSet::null(); 2];
         for (i, (sid, idx)) in [p.left, p.right].into_iter().enumerate() {
@@ -709,19 +738,50 @@ impl Gfx {
             out[i] = (img.image, set.width, set.height);
             sets[i] = img.set;
         }
-        // Is the GPU work that wrote these two images finished? With --wait-fences, wait for it (up to 25 ms).
-        let (mut fence_supported, mut fence_pending, mut fence_ms) = (false, false, 0.0f32);
-        if self.wait_fences || self.dump_dir.is_some() {
-            for (sid, idx) in [p.left, p.right] {
-                if let Some(set) = sh.sets.get(&sid) {
-                    let (sup, pend, ms) = fence_state(set.sync_fds[idx as usize], if self.wait_fences { 25 } else { 0 });
-                    fence_supported |= sup;
-                    fence_pending |= pend;
-                    fence_ms += ms;
+        // Our previous read has finished (draw waited for it), so every older frame can go back to SteamVR (type 6: [6, frame]).
+        let fd = DRIVER_FD.load(Ordering::Relaxed);
+        if fd >= 0 && self.used_frame != Some((fd, p.frame)) {
+            self.used_frame = Some((fd, p.frame));
+            let mut w = [0u32; 16];
+            w[0] = 6;
+            w[1] = p.frame;
+            libc::send(fd, w.as_ptr() as *const _, 64, libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT);
+        }
+        // SteamVR calls Present when it has submitted its GPU work, not when that work has finished.
+        let (mut fence_supported, mut fence_pending) = (false, false);
+        let mut wait_fds = [-1; 2];
+        for (eye, (sid, idx)) in [p.left, p.right].into_iter().enumerate() {
+            let Some(fd) = sh.sets.get(&sid).and_then(|s| export_write_fence(s.sync_fds[idx as usize])) else { continue };
+            fence_supported = true;
+            fence_pending |= sync_file_pending(fd, 0);
+            if self.semaphore_fd.is_some() {
+                wait_fds[eye] = fd;
+            } else {
+                sync_file_pending(fd, 25);
+                libc::close(fd);
+            }
+        }
+        Some(Eyes { imgs: out, sets, render_q: p.render_q, bounds: p.bounds, frame: p.frame, slot: p.left, age_ms: p.at.elapsed().as_secs_f32() * 1000.0, fence_supported, fence_pending, wait_fds })
+    }
+
+    /// Make the next submission wait for SteamVR's writes; returns the semaphores to wait on. Takes ownership of the fds.
+    unsafe fn import_wait_fds(&self, fds: [RawFd; 2]) -> Vec<vk::Semaphore> {
+        let mut out = vec![];
+        for (eye, fd) in fds.into_iter().enumerate() {
+            if fd < 0 { continue; }
+            let Some(loader) = &self.semaphore_fd else { libc::close(fd); continue };
+            let info = vk::ImportSemaphoreFdInfoKHR::default()
+                .semaphore(self.read_ready[eye]).flags(vk::SemaphoreImportFlags::TEMPORARY)
+                .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD).fd(fd);
+            match loader.import_semaphore_fd(&info) {
+                Ok(()) => out.push(self.read_ready[eye]),
+                Err(e) => {
+                    eprintln!("sync file import failed: {e:?}");
+                    libc::close(fd);
                 }
             }
         }
-        Some(Eyes { imgs: out, sets, render_q: p.render_q, bounds: p.bounds, frame: p.frame, slot: p.left, used_previous: !use_latest, age_ms: p.at.elapsed().as_secs_f32() * 1000.0, fence_supported, fence_pending, fence_ms })
+        out
     }
 
     /// Import SteamVR's three swap textures. The parameters must match how SteamVR created the images (same format,
@@ -790,6 +850,31 @@ impl Gfx {
     /// Draw one frame: the driver's eyes if it is presenting, otherwise the stereo test pattern.
     unsafe fn draw(&mut self, t: f32, window: &Window, shared: &Mutex<Shared>, pose: &Mutex<tracking::PoseState>) -> Result<(), Box<dyn std::error::Error>> {
         self.device.wait_for_fences(&[self.in_flight], true, u64::MAX)?;
+        // Waiting for our last frame to reach the display gives the vblank time and keeps only one frame queued.
+        let mut vblank_ns = 0u64;
+        let waited = match (&self.present_wait, self.present_id) {
+            (Some(pw), id) if id > 0 => Some(pw.wait_for_present(self.swapchain, id, 50_000_000)),
+            _ => None,
+        };
+        match waited {
+            Some(Ok(())) => { vblank_ns = tracking::monotonic_ns(); self.present_wait_timeouts = 0; }
+            Some(Err(vk::Result::TIMEOUT)) => {
+                self.present_wait_timeouts += 1;
+                if self.present_wait_timeouts >= 3 {
+                    println!("present wait keeps timing out; estimating vblank from acquire instead");
+                    self.present_wait = None;
+                }
+            }
+            Some(Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR)) | None => {}
+            Some(Err(e)) => return Err(e.into()),
+        }
+        let (idx, _) = match self.swapchain_loader.acquire_next_image(self.swapchain, u64::MAX, self.image_available, vk::Fence::null()) {
+            Ok(r) => r,
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return self.create_swapchain(window.inner_size()),
+            Err(e) => return Err(e.into()),
+        };
+        self.device.reset_fences(&[self.in_flight])?;
+        // Chosen after acquire, which can block for a refresh, so the frame is as fresh as possible when the GPU reads it.
         let eyes = self.prepare_eyes(shared);
         if eyes.is_none() && shared.lock().unwrap().connected {
             self.fallbacks += 1;
@@ -803,16 +888,10 @@ impl Gfx {
             }
             if self.dump_remaining > 0 {
                 self.dump_remaining -= 1;
-                for (k, tag) in ["L", "R"].into_iter().enumerate() {
-                    if let Err(err) = self.dump_eye(&dir, e.imgs[k], self.dump_index, tag) {
-                        eprintln!("dump failed: {err}");
-                        self.dump_remaining = 0;
-                        break;
-                    }
+                for fd in e.wait_fds.into_iter().filter(|&fd| fd >= 0) {
+                    sync_file_pending(fd, 25);
                 }
-                // Read the same images again after a pause: if a frame changes between the two reads, SteamVR was still drawing it.
-                std::thread::sleep(std::time::Duration::from_millis(60));
-                for (k, tag) in ["L2", "R2"].into_iter().enumerate() {
+                for (k, tag) in ["L", "R"].into_iter().enumerate() {
                     if let Err(err) = self.dump_eye(&dir, e.imgs[k], self.dump_index, tag) {
                         eprintln!("dump failed: {err}");
                         self.dump_remaining = 0;
@@ -824,34 +903,36 @@ impl Gfx {
                 let delta = e.render_q.map(|rq| 2.0 * (rq[0] * now_q[0] + rq[1] * now_q[1] + rq[2] * now_q[2] + rq[3] * now_q[3]).abs().min(1.0).acos().to_degrees());
                 use std::io::Write;
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("meta.csv")) {
-                    if self.dump_index == 0 { let _ = writeln!(f, "dump_index,steamvr_frame,left_set,left_slot,used_previous,age_ms,render_vs_now_deg,fence_supported,fence_pending,fence_ms"); }
-                    let _ = writeln!(f, "{},{},{},{},{},{:.1},{},{},{},{:.2}", self.dump_index, e.frame, e.slot.0, e.slot.1, e.used_previous as u8, e.age_ms, delta.map(|d| format!("{d:.2}")).unwrap_or_default(), e.fence_supported as u8, e.fence_pending as u8, e.fence_ms);
+                    if self.dump_index == 0 { let _ = writeln!(f, "dump_index,steamvr_frame,left_set,left_slot,age_ms,render_vs_now_deg,fence_supported,fence_pending"); }
+                    let _ = writeln!(f, "{},{},{},{},{:.1},{},{},{}", self.dump_index, e.frame, e.slot.0, e.slot.1, e.age_ms, delta.map(|d| format!("{d:.2}")).unwrap_or_default(), e.fence_supported as u8, e.fence_pending as u8);
                 }
                 self.dump_index += 1;
             }
         }
-        let (idx, _) = match self.swapchain_loader.acquire_next_image(self.swapchain, u64::MAX, self.image_available, vk::Fence::null()) {
-            Ok(r) => r,
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return self.create_swapchain(window.inner_size()),
-            Err(e) => return Err(e.into()),
-        };
-        self.device.reset_fences(&[self.in_flight])?;
-        // acquire returns when the display has taken the previous frame, so this is our best estimate of a vblank: tell the
-        // driver, which turns it into SteamVR's vsync event (type 5: [5, sequence]).
+        // Tell the driver, which paces SteamVR's vsync on it (type 5: [5, sequence, ns_lo, ns_hi]). Without present wait, ns is 0:
+        // acquire returning when the display took the previous frame is then the best estimate, taken on arrival.
         let fd = DRIVER_FD.load(Ordering::Relaxed);
         if fd >= 0 {
             self.vsync_seq = self.vsync_seq.wrapping_add(1);
             let mut w = [0u32; 16];
             w[0] = 5;
             w[1] = self.vsync_seq;
+            w[2] = vblank_ns as u32;
+            w[3] = (vblank_ns >> 32) as u32;
             libc::send(fd, w.as_ptr() as *const _, 64, libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT);
         }
         let cmd = self.cmd;
         self.device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
         self.device.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
         let image = self.images[idx as usize];
+        let mut wait = vec![self.image_available];
+        let mut stages = vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         match eyes {
             Some(e) => {
+                for s in self.import_wait_fds(e.wait_fds) {
+                    wait.push(s);
+                    stages.push(vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::FRAGMENT_SHADER);
+                }
                 // Reproject when we have the pose SteamVR rendered for and a current tracked pose; otherwise plain blit.
                 let mut delta = None;
                 let rows = if self.warp.is_some() {
@@ -876,8 +957,6 @@ impl Gfx {
         }
         self.device.end_command_buffer(cmd)?;
 
-        let wait = [self.image_available];
-        let stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signal = [self.render_done[idx as usize]];
         let cmds = [cmd];
         self.device.queue_submit(self.queue,
@@ -885,8 +964,14 @@ impl Gfx {
             self.in_flight)?;
         let swapchains = [self.swapchain];
         let indices = [idx];
-        match self.swapchain_loader.queue_present(self.queue,
-            &vk::PresentInfoKHR::default().wait_semaphores(&signal).swapchains(&swapchains).image_indices(&indices)) {
+        let ids = [self.present_id + 1];
+        let mut present_id = vk::PresentIdKHR::default().present_ids(&ids);
+        let mut info = vk::PresentInfoKHR::default().wait_semaphores(&signal).swapchains(&swapchains).image_indices(&indices);
+        if self.present_wait.is_some() {
+            info = info.push_next(&mut present_id);
+            self.present_id += 1;
+        }
+        match self.swapchain_loader.queue_present(self.queue, &info) {
             Ok(_) | Err(vk::Result::SUBOPTIMAL_KHR) => {}
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => self.create_swapchain(window.inner_size())?,
             Err(e) => return Err(e.into()),
@@ -904,6 +989,7 @@ impl Drop for Gfx {
             for v in self.views.drain(..) { self.device.destroy_image_view(v, None); }
             self.device.destroy_fence(self.in_flight, None);
             self.device.destroy_semaphore(self.image_available, None);
+            for s in self.read_ready { self.device.destroy_semaphore(s, None); }
             if let Some(w) = self.warp.take() {
                 self.device.destroy_pipeline(w.pipeline, None);
                 self.device.destroy_pipeline_layout(w.layout, None);
@@ -930,10 +1016,8 @@ struct App {
     shared: Arc<Mutex<Shared>>,
     last_monitor_check: Instant,
     reproject: bool,
-    guard_ms: u64,
     dump_dir: Option<std::path::PathBuf>,
     dump_count: u32,
-    wait_fences: bool,
     pose: Arc<Mutex<tracking::PoseState>>,
 }
 
@@ -955,10 +1039,9 @@ impl ApplicationHandler for App {
         let window = el
             .create_window(Window::default_attributes().with_title("XREAL presenter").with_fullscreen(Some(Fullscreen::Borderless(chosen))))
             .expect("create window");
-        let mut gfx = unsafe { Gfx::new(&window, self.reproject, self.guard_ms) }.expect("vulkan init");
+        let mut gfx = unsafe { Gfx::new(&window, self.reproject) }.expect("vulkan init");
         gfx.dump_dir = self.dump_dir.clone();
         gfx.dump_count = self.dump_count;
-        gfx.wait_fences = self.wait_fences;
         self.gfx = Some(gfx);
         self.window = Some(window);
     }
@@ -1016,12 +1099,10 @@ impl ApplicationHandler for App {
 fn main() {
     let mut monitor_name = "DP-1".to_string();
     let mut reproject = false;
-    let mut guard_ms = 4u64;
     let mut sim_pose = false;
     let mut sim_yaw = 25.0f64;
     let mut sim_pitch = 0.0f64;
     let mut sim_pitch_amp = 12.0f64;
-    let mut wait_fences = false;
     let mut dump_count = 30u32;
     let mut dump_dir: Option<std::path::PathBuf> = None;
     if let Some(d) = &dump_dir { let _ = d; }
@@ -1037,16 +1118,12 @@ fn main() {
             sim_pitch = args.next().and_then(|v| v.parse().ok()).expect("--sim-pitch needs degrees");
         } else if a == "--sim-pitch-amp" {
             sim_pitch_amp = args.next().and_then(|v| v.parse().ok()).expect("--sim-pitch-amp needs degrees");
-        } else if a == "--wait-fences" {
-            wait_fences = true;
         } else if a == "--sim-yaw" {
             sim_yaw = args.next().and_then(|v| v.parse().ok()).expect("--sim-yaw needs degrees");
         } else if a == "--dump-frames" {
             dump_count = args.next().and_then(|v| v.parse().ok()).expect("--dump-frames needs a number");
         } else if a == "--dump" {
             dump_dir = Some(std::path::PathBuf::from(args.next().expect("--dump needs a directory")));
-        } else if a == "--guard-ms" {
-            guard_ms = args.next().and_then(|v| v.parse().ok()).expect("--guard-ms needs a number");
         }
     }
     let el = EventLoop::new().expect("event loop");
@@ -1063,6 +1140,6 @@ fn main() {
         std::thread::spawn(move || tracking::run(p));
     }
     { let (sh, p) = (shared.clone(), pose.clone()); std::thread::spawn(move || link_thread(sh, p)); }
-    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), reproject, guard_ms, dump_dir, dump_count, wait_fences, pose: pose_for_app };
+    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), reproject, dump_dir, dump_count, pose: pose_for_app };
     el.run_app(&mut app).expect("run");
 }

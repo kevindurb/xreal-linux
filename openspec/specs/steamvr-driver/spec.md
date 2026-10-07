@@ -15,11 +15,11 @@ The driver SHALL register an HMD named "XREAL 1S" that advertises a display comp
 
 ### Requirement: Display geometry
 
-The driver SHALL advertise a per-eye render size (default 1920x1080, overridable with `driver_xreal.render_width` and `render_height`), a 3840x1080 window split into two eye viewports, a display frequency (default 60 Hz), and a symmetric field of view that matches the presenter's reprojection constants.
+The driver SHALL advertise a per-eye render size (default 1280x720, overridable with `driver_xreal.render_width` and `render_height`), a 3840x1080 window split into two eye viewports, a display frequency (default 60 Hz), and a symmetric field of view that matches the presenter's reprojection constants.
 
 #### Scenario: Lower render size configured
 
-- **WHEN** `driver_xreal.render_width` and `render_height` are set to 1280 and 720
+- **WHEN** `driver_xreal.render_width` and `render_height` are set to 1920 and 1080
 - **THEN** SteamVR's recommended render target size follows
 
 ### Requirement: Swap textures from SteamVR
@@ -30,6 +30,20 @@ The driver SHALL allocate swap-texture sets (three images each) through SteamVR'
 
 - **WHEN** the presenter connects while sets already exist
 - **THEN** every existing set is sent to it
+
+### Requirement: Never hand SteamVR an image the presenter may read
+
+Once the presenter has reported a frame it is using, the driver SHALL NOT return from `GetNextSwapTextureSetIndex` an image of a frame it sent the presenter until the presenter reports using a newer frame. If every image is held for about a refresh and a half, the driver SHALL reclaim the oldest so SteamVR keeps running.
+
+#### Scenario: Presenter one frame behind
+
+- **WHEN** the presenter is still using frame N and frame N+1 has been sent
+- **THEN** SteamVR's next image is the set's third image, not N's or N+1's
+
+#### Scenario: Presenter stalls
+
+- **WHEN** the presenter reports no newer frame while all three images are held
+- **THEN** after about a refresh and a half the driver hands out the oldest frame's image and logs it
 
 ### Requirement: Forward every presented frame
 
@@ -42,12 +56,12 @@ On each `Present` the driver SHALL send the presenter the left and right set and
 
 ### Requirement: Report the tracked pose
 
-The driver SHALL report to SteamVR the orientation and angular velocity it receives from the presenter, placed at a configurable head height (`driver_xreal.head_height`, default 1.5 m), and SHALL fall back to an untracked identity pose when no presenter pose is available. Angular velocity and the head model are controllable with `send_angular_velocity` and `head_model` for diagnosis.
+The driver SHALL report to SteamVR each new orientation and angular velocity it receives from the presenter, stamped with its age (`poseTimeOffset`) from the host time the sample arrived, placed at a configurable head height (`driver_xreal.head_height`, default 1.5 m), and SHALL fall back to an untracked identity pose when no presenter pose is available. Angular velocity and the head model are controllable with `send_angular_velocity` and `head_model` for diagnosis.
 
 #### Scenario: Presenter tracking
 
 - **WHEN** the presenter sends valid poses
-- **THEN** SteamVR's head pose follows the glasses' orientation at the configured height
+- **THEN** SteamVR's head pose follows the glasses' orientation at the configured height, updated only when a new sample arrives (and at least every 100 ms)
 
 #### Scenario: No presenter
 
@@ -56,7 +70,12 @@ The driver SHALL report to SteamVR the orientation and angular velocity it recei
 
 ### Requirement: Vsync follows the presenter
 
-The driver SHALL emit SteamVR vsync events when the presenter reports a display refresh and SHALL fall back to a timer at the display frequency only when the presenter has not reported one for 100 ms.
+The driver SHALL declare each SteamVR vsync 2 ms (a running start) before the glasses' next real vblank, as timed from the presenter's vblank reports, and SHALL fall back to a timer at the display frequency only when the presenter has not reported one for 100 ms. With `driver_xreal.hold_after_present` (default true), `PostPresent` SHALL hold SteamVR until the next running start. The advertised vsync-to-photons time SHALL be the running start plus one refresh unless `driver_xreal.seconds_from_vsync_to_photons` is set.
+
+#### Scenario: Presenter reports vblanks
+
+- **WHEN** the presenter reports vblank times
+- **THEN** each vsync event is declared about 2 ms before the following vblank
 
 #### Scenario: Presenter stops
 
