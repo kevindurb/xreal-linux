@@ -6,7 +6,7 @@ import sys
 
 HOST = sys.argv[1] if len(sys.argv) > 1 else "169.254.2.1"
 PORT = 52998
-MAGIC = bytes.fromhex("28360000008038" "41")
+MAGIC = bytes.fromhex("283600000080")   # bytes 6-7 vary between sessions, so they are not part of it
 RECORD = 134
 TYPE_IMU = 0x0B
 

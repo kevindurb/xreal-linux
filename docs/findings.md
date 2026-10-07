@@ -50,7 +50,7 @@ Fixed 134-byte records, about 1400 per second in total. Layout (little endian), 
 
 | Offset | Size | Meaning |
 |---|---|---|
-| 0 | 8 | Magic `28 36 00 00 00 80 38 41` |
+| 0 | 6 | Magic `28 36 00 00 00 80` (bytes 6-7 were `38 41` in early captures and `28 be` in a later session, so they are a varying field and must not be matched on) |
 | 14 | 8 (u64) | Timestamp. Median step about 0.99 ms |
 | 30 | 4 (u32) | Record type |
 | 34 | 24 (6 x f32) | Type `0x0b`: gyro x, y, z then accel x, y, z |

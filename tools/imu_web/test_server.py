@@ -16,9 +16,10 @@ import sources  # noqa: E402
 CAPTURE = Path(__file__).resolve().parents[2] / "captures" / "imu_yaw.bin"
 
 
-def make_record(ts_ns, kind, vals):
+def make_record(ts_ns, kind, vals, varying=b"\x38\x41"):
     rec = bytearray(sources.RECORD)
-    rec[:8] = sources.MAGIC
+    rec[:len(sources.MAGIC)] = sources.MAGIC
+    rec[6:8] = varying   # header bytes 6-7 differ between glasses sessions (38 41 vs 28 be)
     struct.pack_into("<Q", rec, sources.TS_OFFSET, ts_ns)
     struct.pack_into("<I", rec, sources.TYPE_OFFSET, kind)
     struct.pack_into("<6f", rec, sources.FLOAT_OFFSET, *vals)
@@ -37,6 +38,12 @@ class ParseTests(unittest.TestCase):
         recs2, _ = sources.parse_records(rest + b[50:])
         self.assertEqual(len(recs2), 1)
         self.assertEqual(recs2[0][0], 3_000_000)
+
+    def test_header_bytes_6_7_are_not_matched(self):
+        stream = b"".join(make_record(i * 1_000_000, 0x0B, (0, 0, 0, 0, -9.8, 0), varying=v)
+                          for i, v in enumerate([b"\x38\x41", b"\x28\xbe", b"\x00\x00", b"\xff\xff"]))
+        recs, _ = sources.parse_records(stream)
+        self.assertEqual(len(recs), 4)
 
     @unittest.skipUnless(CAPTURE.exists(), "real capture not present")
     def test_real_capture(self):

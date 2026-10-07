@@ -13,7 +13,7 @@ import struct
 import sys
 import time
 
-MAGIC = bytes.fromhex("2836000000803841")
+MAGIC = bytes.fromhex("283600000080")   # bytes 6-7 vary between sessions, so they are not part of it
 RECORD = 134
 TYPE_IMU = 0x0B
 TS_OFFSET, TYPE_OFFSET, FLOAT_OFFSET = 14, 30, 34
