@@ -36,3 +36,20 @@ Undo with `vrpathreg.sh removedriver /path/to/driver/xreal`.
 SteamVR's `vrserver` runs inside Steam's pressure-vessel container with its own mount namespace, so it cannot see a socket
 file under `/run/user/<uid>`. An abstract unix socket (`@xreal-presenter-<uid>`) lives in the network namespace and is
 reachable from inside the container. The presenter checks `SO_PEERCRED` and only accepts the same user.
+
+## SteamVR settings that matter for this headset (config/steamvr.vrsettings)
+
+Found while tuning on a Steam Deck. All are plain SteamVR settings, not driver code:
+
+- `power.turnOffScreensTimeout` (default **5 s**) and `power.pauseCompositorOnStandby` (default true): the glasses have no
+  proximity sensor, so SteamVR decides the user has left after a few seconds without head movement, enters standby and
+  pauses the compositor. That showed up as slow presents (`layers=0`) and a stuttery feel. Set the timeout very large and
+  `pauseCompositorOnStandby` to false.
+- `driver_xreal.render_width` / `render_height` (per eye): the driver's recommended render size. The Deck's GPU was pinned
+  at 100% at the default 1920x1080 per eye with SteamVR Home; 1280x720 leaves headroom.
+- `steamvr.enableHomeApp`: Home is heavy; turning it off lets SteamVR idle, but then there is little to look at.
+- `driver_xreal.head_height` (metres, default 1.5): the driver reports the head at this height in standing space, or the
+  wearer appears to be in the floor.
+- Display layout: with the glasses as the only active display, every desktop window (Steam, SteamVR dialogs) lands on them
+  and, in full SBS, shows up in one eye. Keep the Deck's own panel enabled and primary
+  (`kscreen-doctor output.eDP-1.enable output.eDP-1.priority.1 output.DP-1.priority.2`) so windows open there.
