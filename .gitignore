@@ -4,3 +4,4 @@ captures/
 __pycache__/
 .openvr/
 xreal/bin/
+presenter/target/

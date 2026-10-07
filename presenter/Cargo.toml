@@ -1,0 +1,14 @@
+[package]
+name = "xreal-presenter"
+version = "0.1.0"
+edition = "2021"
+description = "Fullscreen Vulkan presenter for XREAL glasses (side-by-side stereo test pattern for now)"
+
+[dependencies]
+ash = "0.38"
+ash-window = "0.13"
+raw-window-handle = "0.6"
+winit = "0.30"
+
+[profile.release]
+opt-level = 3
