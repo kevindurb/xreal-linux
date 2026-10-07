@@ -226,3 +226,18 @@ So the current mode can be **detected from the DRM mode list or EDID** with no p
   data). Earlier runs had it streaming at about 11.5 MB/s from the start. Likely the glasses only run the camera when a
   feature such as anchor needs it. Not yet confirmed by controlled toggling.
 - Still unknown: any host-to-glasses command, including how to switch SBS from the host.
+
+## Full SBS stereo and the follow-mode Stabilizer (verified by the wearer)
+
+- **Full SBS gives real per-eye stereo.** With the glasses in full SBS (single `3840x1080` mode), the presenter's test pattern
+  showed the left half to the left eye and the right half to the right eye, with the expected depth offset. In the normal 2D
+  mode both halves are visible to both eyes.
+- **Anchor and follow are both still selectable in full SBS.** They are independent of the SBS setting.
+- **Follow mode is only rigidly head-locked with the Stabilizer off.** With it on, the glasses slowly move the image to follow
+  the head, which would add to any compensation we render. The setting is in the glasses' menu: double-click the X button,
+  then Display, then Stabilizer (XREAL's One-series guide). The wearer confirmed that Stabilizer off made the image rigidly
+  attached. XRLinuxDriver's advice to disable the stabilizer/anchor features on the glasses is for the same reason.
+  A VR setup therefore needs: full SBS, follow mode, Stabilizer off.
+- **The Stabilizer state cannot be read from the control channel.** Three toggles (off, on, off) produced identical-looking
+  port 52999 sequences (`2e` bursts, one `12` message, a 12-message `2e` kind-03 burst); the only varying bytes are an
+  increasing counter. A setup flow has to ask the user to set it.
