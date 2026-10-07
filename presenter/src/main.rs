@@ -290,6 +290,8 @@ struct Gfx {
     used_frame: Option<(RawFd, u32)>, // driver connection and SteamVR frame last reported as in use
     pub new_frames: u32,          // SteamVR frames shown for the first time since the last report
     pub new_frame_age_ms: (f32, f32), // sum and max of their age when picked up, since the last report
+    last_render_q: Option<[f32; 4]>,
+    pub render_steps_deg: Vec<f32>, // how far SteamVR's render pose moved between consecutive new frames, since the last report
 }
 
 impl Gfx {
@@ -380,7 +382,7 @@ impl Gfx {
             extent: vk::Extent2D { width: 1, height: 1 }, pool, cmd, image_available, render_done: vec![], in_flight,
             mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, capture: None, capture_pending: None, fallbacks: 0, last_delta_deg: 0.0,
             semaphore_fd, read_ready, present_wait, present_id: 0, present_wait_timeouts: 0, used_frame: None,
-            new_frames: 0, new_frame_age_ms: (0.0, 0.0),
+            new_frames: 0, new_frame_age_ms: (0.0, 0.0), last_render_q: None, render_steps_deg: vec![],
         };
         g.create_swapchain(window.inner_size())?;
         if reproject {
@@ -764,6 +766,11 @@ impl Gfx {
             let age = p.at.elapsed().as_secs_f32() * 1000.0;
             self.new_frames += 1;
             self.new_frame_age_ms = (self.new_frame_age_ms.0 + age, self.new_frame_age_ms.1.max(age));
+            if let (Some(a), Some(b)) = (self.last_render_q, p.render_q) {
+                let d = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]).abs().min(1.0);
+                self.render_steps_deg.push(2.0 * d.acos().to_degrees());
+            }
+            self.last_render_q = p.render_q;
             let mut w = [0u32; 16];
             w[0] = 6;
             w[1] = p.frame;
@@ -1098,6 +1105,15 @@ impl ApplicationHandler for App {
                         let mean_age = if g.new_frames > 0 { g.new_frame_age_ms.0 / g.new_frames as f32 } else { 0.0 };
                         let newest = format!("{:.1} new SteamVR frames/s (age mean {:.1} max {:.1} ms)", g.new_frames as f32 / secs, mean_age, g.new_frame_age_ms.1);
                         (g.new_frames, g.new_frame_age_ms) = (0, (0.0, 0.0));
+                        // Judder check: during smooth head motion the steps should be even; a repeat (near 0) then a double step is judder.
+                        let mut steps = std::mem::take(&mut g.render_steps_deg);
+                        let newest = if steps.len() > 10 {
+                            steps.sort_by(|a, b| a.total_cmp(b));
+                            let median = steps[steps.len() / 2];
+                            let repeats = steps.iter().filter(|&&d| d < 0.25 * median).count();
+                            let doubles = steps.iter().filter(|&&d| d > 1.75 * median).count();
+                            format!("{newest}, render pose step median {median:.3} deg, {repeats} near-repeats, {doubles} double steps")
+                        } else { newest };
                         if g.reproject {
                             println!("{:.1} fps, {newest}, reprojection delta {:.2} deg, fallback frames {}", self.frames as f32 / secs, g.last_delta_deg, g.fallbacks);
                         } else {

@@ -156,6 +156,7 @@ struct Settings {
     bool sendAngularVelocity = true;  // lets SteamVR predict ahead; settable for diagnosing glitches
     bool headModel = true;            // lets SteamVR add head/neck translation from rotation
     bool holdAfterPresent = true;     // pace SteamVR in PostPresent; settable to compare with and without
+    float holdMaxMs = -1.f;           // longest PostPresent hold; negative means until the next running start
     float vsyncToPhotons = -1.f;      // seconds; negative means the pipeline's known part (see VsyncToPhotons)
     std::string serial = "XREAL-PROTOTYPE-0001";
     std::string model = "XREAL 1S";
@@ -182,6 +183,8 @@ struct Settings {
         if (e == vr::VRSettingsError_None) headModel = b;
         b = s->GetBool("driver_xreal", "hold_after_present", &e);
         if (e == vr::VRSettingsError_None) holdAfterPresent = b;
+        float m = s->GetFloat("driver_xreal", "hold_max_ms", &e);
+        if (e == vr::VRSettingsError_None) holdMaxMs = m;
         float v = s->GetFloat("driver_xreal", "seconds_from_vsync_to_photons", &e);
         if (e == vr::VRSettingsError_None) vsyncToPhotons = v;
     }
@@ -197,6 +200,7 @@ struct Settings {
 struct Pacing {
     int64_t periodNs = 0;
     bool holdAfterPresent = true;
+    int64_t holdMaxNs = -1;
     std::atomic<int64_t> lastTickNs{0};  // the real vblank whose vsync was most recently declared to SteamVR
 };
 
@@ -388,6 +392,7 @@ public:
         if (!pacing_.holdAfterPresent || last == 0) return;
         uint32_t extra = throttling ? throttling->nFramesToThrottle : 0;
         int64_t wait = last + pacing_.periodNs * (1 + extra) - kRunningStartNs - NowNs();
+        if (pacing_.holdMaxNs >= 0 && wait > pacing_.holdMaxNs) wait = pacing_.holdMaxNs;
         if (wait > 0) std::this_thread::sleep_for(std::chrono::nanoseconds(wait));
     }
 
@@ -548,6 +553,7 @@ public:
         settings_.Load();
         pacing_.periodNs = settings_.PeriodNs();
         pacing_.holdAfterPresent = settings_.holdAfterPresent;
+        pacing_.holdMaxNs = settings_.holdMaxMs < 0 ? -1 : (int64_t)(settings_.holdMaxMs * 1e6);
         display_ = std::make_unique<DisplayComponent>(settings_);
         direct_ = std::make_unique<DirectModeComponent>(pacing_);
     }
@@ -569,9 +575,9 @@ public:
         p->SetBoolProperty(c, vr::Prop_HasDisplayComponent_Bool, true);
         p->SetBoolProperty(c, vr::Prop_HasDriverDirectModeComponent_Bool, true);
         p->SetBoolProperty(c, vr::Prop_DriverDirectModeSendsVsyncEvents_Bool, true);
-        Log("HMD activated as device %u (%dx%d per eye, %.1f Hz, direct mode; angular velocity %s, head model %s, hold after present %s, vsync to photons %.4f s)",
+        Log("HMD activated as device %u (%dx%d per eye, %.1f Hz, direct mode; angular velocity %s, head model %s, hold after present %s (max %.1f ms), vsync to photons %.4f s)",
             id, settings_.renderWidth, settings_.renderHeight, settings_.refreshHz, settings_.sendAngularVelocity ? "on" : "off",
-            settings_.headModel ? "on" : "off", settings_.holdAfterPresent ? "on" : "off", settings_.VsyncToPhotons());
+            settings_.headModel ? "on" : "off", settings_.holdAfterPresent ? "on" : "off", settings_.holdMaxMs, settings_.VsyncToPhotons());
         pose_thread_ = std::thread([this] { PoseLoop(); });
         vsync_thread_ = std::thread([this] { VsyncLoop(); });
         return vr::VRInitError_None;
