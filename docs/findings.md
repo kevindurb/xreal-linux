@@ -337,3 +337,10 @@ fallback is active the queue runs up to the swapchain depth ahead of the display
 1280x720 and 58% at 1920x1080 with the head still, SteamVR delivered 60 new frames/s, and the wearer called 1920x1080 per eye "buttery". 1920x1080
 is now the driver default. Under the dashboard sweep capture at 1920x1080 (the capture's own copies add some load) the GPU averaged
 about 70% with Home on (90th percentile and peak 100%) and 20-29% with Home off. Heavier content than Home has not been tried.
+
+## Capture recorder check (6DoF change, task 1.1)
+
+`tools/capture_eye.py` (format in `docs/capture-format.md`) recorded 10 s with the glasses still, in follow mode, display at 60 Hz:
+52998 delivered 1873856 bytes (about 1398 x 134-byte slots/s, which includes non-IMU record types, not yet split by type),
+52996 delivered 600 records (60/s, consistent with "follows the display refresh"), and **52997 delivered nothing**: the camera
+was idle, as noted above. A camera capture therefore needs the glasses in a mode that starts the Eye (anchor mode so far).
