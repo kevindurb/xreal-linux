@@ -679,3 +679,23 @@ Notes: the SDK ids are the same numbers as the control port's magics (checked fo
 the empty request body for all of them; the SDK's own form `1a 00` was not tried. A reply with an empty body means success; a request with a
 parameter replies with the value in field 2. See `docs/findings.md` for what the camera did.
 
+### 13.5 Offline reading of the vendor camera client (`libnr_service.so`, ControlGlasses 3.1.0, 2026-10-08)
+
+The service has one wrapper function per grayscale-camera request, laid out back to back (about 0xC8C bytes each; addresses are virtual addresses in this build):
+
+| Request | Wrapper starts at | Logs |
+|---|---|---|
+| `NRGrayscaleCameraCreate` (10047) | `0x18fb7e8` | `Call NRGrayscaleCameraCreate start` |
+| `...InitSetPixelFormat` (10048) | `0x18fc49c` | `... start, format={}` |
+| `...InitSetImageResolution` (10049) | `0x18fd128` | `... start, resolution={}` |
+| `...InitSetAutoExposureType` (10050) | `0x18fddb4` | `... start, type={}` |
+| `...InitSetExposureTime` (10051) | `0x18fea40` | `... start, time={}` |
+| `...InitSetGain` (10052) | `0x18ff6cc` | `... start, gain={}` |
+| `NRGrayscaleCameraStart` (10053) | `0x1900354` (loads `0x2745`) | none found |
+| `NRGrayscaleCameraStop` (10054) | `0x1900bf8` (loads `0x2746`) | none found |
+
+- Each `InitSet*` takes **one integer** (`format`, `resolution`, `type`, `time`, `gain`); the request layout `{ 1: varint }` in section 8 fits.
+- Start and Stop load exactly the ids we sent, which agrees with the camera answering Start.
+- The wrappers sit in the class `DriverInterface<NRGrayscaleCameraInterface>` and are reached through its virtual table, so a direct search for callers finds none. **The integer values the service passes were not recovered**; tracing the virtual calls from `ImpGrayCamera` / `GrayscaleCameraProvider` is the next step if they are needed.
+- The same library has an identical set for the RGB camera (`NRRgbCameraInitSet*`, plus `Release`, `GetPluginState` and a host time offset request, `NRRgbCameraSetHostTimeOffset`).
+
