@@ -1,0 +1,1671 @@
+{
+ "source": "JSON protocol descriptors embedded in libnr_rgb_camera.so, libnr_service.so and libnr_api.so of XREAL ControlGlasses 1.1.0.20250307172552 (XREAL SDK 3.0.0). Copied verbatim; see docs/nebula-findings.md section 8.",
+ "descriptors": [
+  {
+   "found_in": [
+    "libnr_api.so",
+    "libnr_rgb_camera.so",
+    "libnr_service.so"
+   ],
+   "descriptor": {
+    "protocol_version": "0x20191212",
+    "support_identifers": [
+     "101164889953871ULL",
+     "538513938ULL",
+     "236593798731343ULL"
+    ],
+    "gray_cam": {
+     "camera_information": {
+      "resolution_width": 640,
+      "resolution_height": 481,
+      "frame_rate": 30,
+      "channels": 2,
+      "uvc_fmt": 0,
+      "product_name": "Camera-OV580",
+      "product_list": []
+     },
+     "timestamp": {
+      "type": "u64",
+      "offset": 0,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "image_type": {
+      "type": "u16",
+      "offset": 8,
+      "bytes_size": 2,
+      "benchmark": 0
+     },
+     "sync_ts": {
+      "type": "u64",
+      "offset": 10,
+      "bytes_size": 8,
+      "benchmark": 0
+     },
+     "frame_number": {
+      "type": "u32",
+      "offset": 18,
+      "bytes_size": 4
+     },
+     "exposure_0": {
+      "type": "u16",
+      "offset": 22,
+      "bytes_size": 2,
+      "scale": 1
+     },
+     "gain_0": {
+      "type": "u16",
+      "offset": 24,
+      "bytes_size": 2
+     },
+     "signature": {
+      "type": "u32",
+      "offset": 26,
+      "bytes_size": 4,
+      "benchmark": 0
+     },
+     "cam_timestamp_offset": {
+      "type": "u64",
+      "default": 37600
+     },
+     "width": {
+      "type": "u32",
+      "default": 640
+     },
+     "height": {
+      "type": "u32",
+      "default": 480
+     },
+     "camera_count": {
+      "type": "u8",
+      "default": 2
+     },
+     "endianness": {
+      "type": "u8",
+      "default": 0
+     }
+    },
+    "imu": {
+     "imu_information": {
+      "product_name": "Camera-OV580",
+      "product_list": []
+     },
+     "report_id": {
+      "type": "u16",
+      "offset": 0,
+      "bytes_size": 2
+     },
+     "version": {
+      "type": "u16",
+      "offset": 2,
+      "bytes_size": 2
+     },
+     "imu_num": {
+      "type": "u16",
+      "offset": 4,
+      "bytes_size": 2
+     },
+     "imu_sample": {
+      "type": "u16",
+      "offset": 6,
+      "bytes_size": 2
+     },
+     "imu_payload": {
+      "type": "u16",
+      "offset": 8,
+      "bytes_size": 2
+     },
+     "reservedPadding": {
+      "type": "string",
+      "offset": 10,
+      "bytes_size": 28
+     },
+     "imu_id": {
+      "type": "u16",
+      "offset": 38,
+      "bytes_size": 2
+     },
+     "sample_id": {
+      "type": "u16",
+      "offset": 40,
+      "bytes_size": 2
+     },
+     "temperature": {
+      "type": "u16",
+      "offset": 42,
+      "bytes_size": 2
+     },
+     "gyro_tmsp": {
+      "type": "u64",
+      "offset": 44,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "gyro_numerator": {
+      "type": "u32",
+      "default": 4000
+     },
+     "gyro_denominator": {
+      "type": "u32",
+      "default": 65536
+     },
+     "gyro_0": {
+      "type": "u32",
+      "offset": 60,
+      "bytes_size": 4
+     },
+     "gyro_1": {
+      "type": "u32",
+      "offset": 64,
+      "bytes_size": 4
+     },
+     "gyro_2": {
+      "type": "u32",
+      "offset": 68,
+      "bytes_size": 4
+     },
+     "timestamp": {
+      "type": "u64",
+      "offset": 72,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "acc_numerator": {
+      "type": "u32",
+      "default": 32
+     },
+     "acc_denominator": {
+      "type": "u32",
+      "default": 65536
+     },
+     "acc_0": {
+      "type": "u32",
+      "offset": 88,
+      "bytes_size": 4
+     },
+     "acc_1": {
+      "type": "u32",
+      "offset": 92,
+      "bytes_size": 4
+     },
+     "acc_2": {
+      "type": "u32",
+      "offset": 96,
+      "bytes_size": 4
+     },
+     "mag_tmsp": {
+      "type": "u64",
+      "offset": 100,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "mag_numerator": {
+      "type": "u32",
+      "offset": 108,
+      "bytes_size": 4
+     },
+     "mag_denominator": {
+      "type": "u32",
+      "default": 1
+     },
+     "mag_0": {
+      "type": "u32",
+      "offset": 116,
+      "bytes_size": 4
+     },
+     "mag_1": {
+      "type": "u32",
+      "offset": 120,
+      "bytes_size": 4
+     },
+     "mag_2": {
+      "type": "u32",
+      "offset": 124,
+      "bytes_size": 4
+     },
+     "gravity": {
+      "type": "f64",
+      "default": 9.8
+     },
+     "mag_scale": {
+      "type": "f64",
+      "default": 1.0
+     },
+     "transform": {
+      "type": "s32",
+      "default": 1
+     },
+     "frame_bytes": {
+      "type": "u32",
+      "default": 128
+     },
+     "who": {
+      "type": "u8",
+      "default": 18
+     },
+     "endianness": {
+      "type": "u8",
+      "default": 0
+     }
+    }
+   }
+  },
+  {
+   "found_in": [
+    "libnr_api.so",
+    "libnr_rgb_camera.so",
+    "libnr_service.so"
+   ],
+   "descriptor": {
+    "protocol_version": "0x20200316",
+    "support_identifers": [
+     "20200316",
+     "20200331",
+     "20200402",
+     "20200415",
+     "20200528",
+     "20200609",
+     "20200618",
+     "20200622",
+     "20200623",
+     "20200703",
+     "20200709",
+     "20200715",
+     "20200717",
+     "20200729",
+     "20200824",
+     "20200825",
+     "20200901",
+     "20200902",
+     "20200914",
+     "20200917",
+     "20200922",
+     "20201019",
+     "20201021",
+     "20201030",
+     "20201031",
+     "20201106",
+     "20201116",
+     "20201126",
+     "20201130",
+     "20201208",
+     "20201224"
+    ],
+    "vsync": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "S"
+     },
+     "sequence": {
+      "type": "string",
+      "offset": 6,
+      "bytes_size": 8
+     },
+     "timestamp": {
+      "type": "string",
+      "offset": 15,
+      "bytes_size": 8
+     }
+    },
+    "temperature": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "T"
+     },
+     "temperature": {
+      "type": "string",
+      "offset": 6,
+      "bytes_size": 5
+     },
+     "timestamp": {
+      "type": "string",
+      "offset": 12,
+      "bytes_size": 8
+     }
+    },
+    "ambient_light": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "L"
+     },
+     "intensity": {
+      "type": "string",
+      "offset": 6,
+      "bytes_size": 5
+     },
+     "timestamp": {
+      "type": "string",
+      "offset": 12,
+      "bytes_size": 8
+     }
+    },
+    "temple_temperature": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "R"
+     },
+     "temperature": {
+      "type": "string",
+      "offset": 6,
+      "bytes_size": 5
+     },
+     "timestamp": {
+      "type": "string",
+      "offset": 12,
+      "bytes_size": 8
+     }
+    },
+    "7211_update_status": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "D"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "magnetometer": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "M"
+     },
+     "mag_0": {
+      "type": "string",
+      "offset": 7,
+      "bytes_size": 8
+     },
+     "mag_1": {
+      "type": "string",
+      "offset": 16,
+      "bytes_size": 8
+     },
+     "mag_2": {
+      "type": "string",
+      "offset": 25,
+      "bytes_size": 8
+     },
+     "timestamp": {
+      "type": "string",
+      "offset": 34,
+      "bytes_size": 8
+     }
+    },
+    "psensor": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "P"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "key_brightness": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "K"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "sleep_event": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "A"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "brightness": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "B"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "2d3d": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "3"
+     },
+     "mode": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "trylightscreen": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "A"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "3"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     }
+    },
+    "activate": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "f"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "log_event": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "5"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "E"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "dev_status": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "j"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "support_devices": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "l"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "support_displays": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "m"
+     },
+     "status": {
+      "type": "string",
+      "offset": 6,
+      "splitter": ":"
+     },
+     "timestamp": {
+      "type": "string",
+      "splitter_offset": 4,
+      "bytes_size": 8,
+      "splitter": ":"
+     }
+    },
+    "heartbeat": {
+     "command_type": {
+      "type": "string",
+      "offset": 2,
+      "bytes_size": 1,
+      "benchmark": "A"
+     },
+     "command_id": {
+      "type": "string",
+      "offset": 4,
+      "bytes_size": 1,
+      "benchmark": "K"
+     },
+     "host_timestamp": {
+      "type": "string",
+      "offset": 6,
+      "bytes_size": 16
+     },
+     "viewer_timestamp": {
+      "type": "string",
+      "offset": 23,
+      "bytes_size": 8
+     },
+     "timestamp": {
+      "type": "string",
+      "offset": 32,
+      "bytes_size": 8
+     }
+    },
+    "const_variable": {
+     "cmd_type": {
+      "CMD_INVALID": "0x00",
+      "CMD_SET": "0x31",
+      "CMD_GET": "0x33",
+      "CMD_RESP_SET": "0x32",
+      "CMD_RESP_GET": "0x34",
+      "CMD_EVENT": "0x35",
+      "CMD_SUPER": "0x40"
+     },
+     "cmd_code": {
+      "CMD_RW_BRIGHTNESS": "0x31",
+      "CMD_RW_LEVEL_LIGHT_MAX": "0x32",
+      "CMD_RW_2D_3D_STATE": "0x33",
+      "CMD_RW_SPEAKER_GAIN": "0x36",
+      "CMD_RW_P_SENSOR_MIN": "0x44",
+      "CMD_RW_P_SENSOR_MAX": "0x45",
+      "CMD_RW_DUTY": "0x4d",
+      "CMD_RW_POWER": "0x39",
+      "CMD_S_SET_UPGRADE_FLAG": "0x38",
+      "CMD_S_BEGIN_UPGRADE": "0x39",
+      "CMD_S_REBOOT_GLASSES": "0x52",
+      "CMD_R_7211_VERSION": "0x48",
+      "CMD_W_7211_UPDATE": "0x58",
+      "CMD_R_GLASSES_GID": "0x43",
+      "CMD_R_GLASSES_TEMP": "0x49",
+      "CMD_RW_HOST_ID": "0x42",
+      "CMD_RW_LIGHT_SWITCH": "0x4c",
+      "CMD_RW_FLASH_LIGHT": "0x57",
+      "CMD_RW_SLEEP_TIME": "0x51",
+      "CMD_RW_VSYNC_SWITCH": "0x4e",
+      "CMD_RW_MAG_SWITCH": "0x55",
+      "CMD_W_OV580_RESET": "0x54",
+      "CMD_RW_BRIGHTNESS_EXT": "0x38",
+      "CMD_RW_TEMPERATURE": "0x60",
+      "CMD_S_SYSTEM_SEND_STATUS": "0x33",
+      "CMD_S_HEARTBEAT": "0x4B",
+      "CMD_S_SDK_VERSION": "0x4E",
+      "CMD_R_GLASSES_VERSION_EXT": "0x61",
+      "CMD_R_TEMPERATURE_EXT": "0x53",
+      "CMD_R_MACHINE_ID": "0x55",
+      "CMD_R_GLASSES_RUN_STATUS": "0x5A",
+      "CMD_R_DISPLAY_INFO": "0x64",
+      "CMD_RW_OLED_BRIGHTNESS": "0x62",
+      "CMD_RW_ACTIVATION": "0x65",
+      "CMD_RW_ACTIVATION_TIME": "0x66",
+      "CMD_RW_PRIVILEGATION": "0x67",
+      "CMD_RW_RGB_SWITCH": "0x68",
+      "CMD_R_DEV_STATUS": "0x6A",
+      "CMD_R_LOG_TRIGGER": "0x6B",
+      "CMD_R_SUPPORT_DEVICES": "0x6C",
+      "CMD_R_SUPPORT_DISPLAYS": "0x6D",
+      "CMD_RW_BRIGHTNESS_SWITCH": "0x6E",
+      "CMD_RW_MAG_CALIBRATION": "0x6F",
+      "CMD_R_RESERVED_SN0": "0x70",
+      "CMD_R_RESERVED_SN1": "0x71",
+      "CMD_R_DISPLAY_DEFAULT_START_MODE": "0x76",
+      "CMD_W_DISPLAY_DEFAULT_START_MODE": "0x70",
+      "CMD_S_SWITCH_OLED": "0x58",
+      "CMD_S_DUMP_DP_REGISTERS": "0x59",
+      "CMD_R_KEY_SWITCH_2D3D": "0x79",
+      "CMD_W_KEY_SWITCH_2D3D": "0x73",
+      "CMD_R_DECOUPLE_PSENSOR_FLAG": "0x78",
+      "CMD_W_DECOUPLE_PSENSOR_FLAG": "0x72",
+      "CMD_S_GET_DISPLAY_STATUS": "0x56",
+      "CMD_R_BRIGHTNESS_LEVEL_NUMBER": "0x7A",
+      "CMD_R_DSP_VERSION": "0x7B",
+      "CMD_R_HW_VERSION": "0x46",
+      "CMD_R_GLASSES_TEMP_LEVEL": "0x7C",
+      "CMD_R_PSENSOR_STATUS": "0x7D"
+     }
+    }
+   }
+  },
+  {
+   "found_in": [
+    "libnr_api.so",
+    "libnr_rgb_camera.so",
+    "libnr_service.so"
+   ],
+   "descriptor": {
+    "protocol_version": "0x20200323",
+    "support_identifers": [
+     "223876400567887ULL",
+     "167638098794063ULL",
+     "183155815634511ULL",
+     "223721781745231ULL",
+     "538968867ULL",
+     "31169807930959ULL",
+     "538972198ULL",
+     "17271293761103ULL"
+    ],
+    "gray_cam": {
+     "camera_information": {
+      "resolution_width": 640,
+      "resolution_height": 481,
+      "frame_rate": 30,
+      "channels": 2,
+      "uvc_fmt": 0,
+      "product_name": "Camera-OV580",
+      "product_list": []
+     },
+     "ov580_mode": {
+      "enable": true,
+      "configuration": [
+       {
+        "address0": "0x00"
+       },
+       {
+        "address1": "0x01"
+       },
+       {
+        "address2": "0x02"
+       }
+      ]
+     },
+     "timestamp": {
+      "type": "u64",
+      "offset": 0,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "image_type": {
+      "type": "u16",
+      "offset": 8,
+      "bytes_size": 2,
+      "benchmark": 0
+     },
+     "sync_ts": {
+      "type": "u64",
+      "offset": 10,
+      "bytes_size": 8,
+      "benchmark": 0
+     },
+     "frame_number": {
+      "type": "u32",
+      "offset": 18,
+      "bytes_size": 4
+     },
+     "exposure_0": {
+      "type": "u16",
+      "offset": 22,
+      "bytes_size": 2,
+      "scale": 1
+     },
+     "gain_0": {
+      "type": "u16",
+      "offset": 24,
+      "bytes_size": 2
+     },
+     "signature": {
+      "type": "u32",
+      "offset": 26,
+      "bytes_size": 4,
+      "benchmark": 0
+     },
+     "cam_timestamp_offset": {
+      "type": "u64",
+      "default": 37600
+     },
+     "width": {
+      "type": "u32",
+      "default": 640
+     },
+     "height": {
+      "type": "u32",
+      "default": 480
+     },
+     "camera_count": {
+      "type": "u8",
+      "default": 2
+     },
+     "endianness": {
+      "type": "u8",
+      "default": 0
+     }
+    },
+    "imu": {
+     "imu_information": {
+      "product_name": "Camera-OV580",
+      "product_list": []
+     },
+     "report_id": {
+      "type": "u16",
+      "offset": 0,
+      "bytes_size": 2
+     },
+     "version": {
+      "type": "u16",
+      "offset": 2,
+      "bytes_size": 2
+     },
+     "imu_num": {
+      "type": "u16",
+      "offset": 4,
+      "bytes_size": 2
+     },
+     "imu_sample": {
+      "type": "u16",
+      "offset": 6,
+      "bytes_size": 2
+     },
+     "imu_payload": {
+      "type": "u16",
+      "offset": 8,
+      "bytes_size": 2
+     },
+     "reservedPadding": {
+      "type": "string",
+      "offset": 10,
+      "bytes_size": 28
+     },
+     "imu_id": {
+      "type": "u16",
+      "offset": 38,
+      "bytes_size": 2
+     },
+     "sample_id": {
+      "type": "u16",
+      "offset": 40,
+      "bytes_size": 2
+     },
+     "temperature": {
+      "type": "u16",
+      "offset": 42,
+      "bytes_size": 2
+     },
+     "temperature_scale_v2": {
+      "type": "f64",
+      "default": 0.007548309
+     },
+     "temperature_offset_v2": {
+      "type": "f64",
+      "default": 25.0
+     },
+     "gyro_tmsp": {
+      "type": "u64",
+      "offset": 44,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "gyro_numerator": {
+      "type": "u32",
+      "offset": 52,
+      "bytes_size": 4,
+      "benchmark": 4000
+     },
+     "gyro_denominator": {
+      "type": "u32",
+      "offset": 56,
+      "bytes_size": 4,
+      "benchmark": 65536
+     },
+     "gyro_0": {
+      "type": "u32",
+      "offset": 60,
+      "bytes_size": 4
+     },
+     "gyro_1": {
+      "type": "u32",
+      "offset": 64,
+      "bytes_size": 4
+     },
+     "gyro_2": {
+      "type": "u32",
+      "offset": 68,
+      "bytes_size": 4
+     },
+     "timestamp": {
+      "type": "u64",
+      "offset": 72,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "acc_numerator": {
+      "type": "u32",
+      "offset": 80,
+      "bytes_size": 4,
+      "benchmark": 32
+     },
+     "acc_denominator": {
+      "type": "u32",
+      "offset": 84,
+      "bytes_size": 4,
+      "benchmark": 65536
+     },
+     "acc_0": {
+      "type": "u32",
+      "offset": 88,
+      "bytes_size": 4
+     },
+     "acc_1": {
+      "type": "u32",
+      "offset": 92,
+      "bytes_size": 4
+     },
+     "acc_2": {
+      "type": "u32",
+      "offset": 96,
+      "bytes_size": 4
+     },
+     "mag_tmsp": {
+      "type": "u64",
+      "offset": 100,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "mag_numerator": {
+      "type": "u32",
+      "offset": 108,
+      "bytes_size": 4
+     },
+     "mag_denominator": {
+      "type": "u32",
+      "default": 1
+     },
+     "mag_0": {
+      "type": "u32",
+      "offset": 116,
+      "bytes_size": 4
+     },
+     "mag_1": {
+      "type": "u32",
+      "offset": 120,
+      "bytes_size": 4
+     },
+     "mag_2": {
+      "type": "u32",
+      "offset": 124,
+      "bytes_size": 4
+     },
+     "gravity": {
+      "type": "f64",
+      "default": 9.8
+     },
+     "mag_scale": {
+      "type": "f64",
+      "default": 1.0
+     },
+     "transform": {
+      "type": "s32",
+      "default": 1
+     },
+     "frame_bytes": {
+      "type": "u32",
+      "default": 128
+     },
+     "who": {
+      "type": "u8",
+      "default": 18
+     },
+     "endianness": {
+      "type": "u8",
+      "default": 0
+     }
+    }
+   }
+  },
+  {
+   "found_in": [
+    "libnr_api.so",
+    "libnr_rgb_camera.so",
+    "libnr_service.so"
+   ],
+   "descriptor": {
+    "protocol_version": "0x20210601",
+    "support_identifers": [
+     "1.00.002"
+    ],
+    "mcu_information": {
+     "product_name": "",
+     "product_list": []
+    },
+    "haley_mode": {
+     "enable": true,
+     "configuration": [
+      {
+       "address0": "0x00"
+      },
+      {
+       "address1": "0x01"
+      },
+      {
+       "address2": "0x02"
+      }
+     ]
+    },
+    "simple_messsage": {
+     "MSG_INVALID": "0x00",
+     "MSG_R_VSYNC_FUCTION": "0x01",
+     "MSG_W_VSYNC_FUCTION": "0x02",
+     "MSG_R_BRIGHTNESS_LEVEL": "0x03",
+     "MSG_W_BRIGHTNESS_LEVEL": "0x04",
+     "MSG_R_BRIGHTNESS_FINE_GRAINED": "0x05",
+     "MSG_W_BRIGHTNESS_FINE_GRAINED": "0x06",
+     "MSG_R_DISPLAY_2D_3D": "0x07",
+     "MSG_W_DISPLAY_2D_3D": "0x08",
+     "MSG_R_PSENSOR_VALUE": "0x09",
+     "MSG_R_PSENSOR_FAR_AWAY": "0x0B",
+     "MSG_W_PSENSOR_FAR_AWAY": "0x0C",
+     "MSG_R_HOST_ID": "0x0D",
+     "MSG_W_HOST_ID": "0x0E",
+     "MSG_R_DISPLAY_DUTY": "0x0F",
+     "MSG_W_DISPLAY_DUTY": "0x10",
+     "MSG_R_TEMPERATURE_FUNCTION": "0x11",
+     "MSG_W_TEMPERATURE_FUNCTION": "0x12",
+     "MSG_R_TEMPLE_TEMPERATURE": "0x13",
+     "MSG_R_BOARD_TEMPERATURE": "0x14",
+     "MSG_R_GLASSID": "0x15",
+     "MSG_R_7211_FW_VERSION": "0x16",
+     "MSG_R_DEVICE_PARAMETERS": "0x17",
+     "MSG_R_DSP_VERSION": "0x18",
+     "MSG_W_CANCEL_ACTIVATION": "0x19",
+     "MSG_R_MAG_CALIBR_DATA": "0x1B",
+     "MSG_W_MAG_CALIBR_DATA": "0x1C",
+     "MSG_R_SLEEP_TIME": "0x1D",
+     "MSG_W_SLEEP_TIME": "0x1E",
+     "MSG_W_FORCE_CTRL_OLED": "0x1F",
+     "MSG_R_PSENSOR_CLOSED": "0x24",
+     "MSG_W_PSENSOR_CLOSED": "0x25",
+     "MSG_R_MCU_APP_FW_VERSION": "0x26",
+     "MSG_R_ACTIVATION_TIME": "0x29",
+     "MSG_W_ACTIVATION_TIME": "0x2A",
+     "MSG_R_PRIVILEGATION": "0x2B",
+     "MSG_W_PRIVILEGATION": "0x2C",
+     "MSG_W_LOG_TRIGGER": "0x2D",
+     "MSG_R_DISPLAY_STATUS": "0x2E",
+     "MSG_W_TRY_CTRL_DISPLAY_STATUS": "0x30",
+     "MSG_W_SDK_VERSION": "0x31",
+     "MSG_R_MACHINE_ID": "0x32",
+     "MSG_R_GLASSES_RUN_STATUS": "0x33",
+     "MSG_R_DEV_LIST": "0x34",
+     "MSG_R_DISPLAY_LISTS": "0x35",
+     "MSG_R_ACTIVATION": "0x36",
+     "MSG_W_ACTIVATION": "0x37",
+     "MSG_W_OLED_ONLY_BRIGHT_LEVEL": "0x38",
+     "MSG_R_OLED_ONLY_BRIGHT_LEVEL": "0x39",
+     "MSG_W_UPDATE_MCU_APP_FW_PREPARE": "0x3E",
+     "MSG_W_MCU_APP_FW_UPDATE_START": "0x3F",
+     "MSG_W_MCU_APP_FW_UPDATE_TRANSMIT": "0x40",
+     "MSG_W_MCU_APP_FW_UPDATE_FINISH": "0x41",
+     "MSG_W_BOOT_JUMP_TO_APP": "0x42",
+     "MSG_R_BOOT_FW_VERSION": "0x43",
+     "MSG_W_MCU_APP_JUMP_TO_BOOT": "0x44",
+     "MSG_W_UPDATE_DSP_APP_FW_PREPARE": "0x45",
+     "MSG_W_UPDATE_DSP_APP_FW_START": "0x46",
+     "MSG_W_UPDATE_DSP_FW_TRANSMIT": "0x47",
+     "MSG_W_UPDATE_DSP_FW_FINISH": "0x48",
+     "MSG_W_DSP_RESET": "0x4A",
+     "MSG_R_OLED_COORDINATE": "0x4D",
+     "MSG_W_OLED_COORDINATE": "0x4E",
+     "MSG_W_SLEEP_MODE": "0x55",
+     "MSG_R_SLEEP_MODE": "0x56",
+     "MSG_R_RESERVED_SN0": "0x57",
+     "MSG_R_RESERVED_SN1": "0x58",
+     "MSG_W_IMU_FREQ_DIVIDE": "0x61",
+     "MSG_R_PSENSOR_SWITCH": "0x6A",
+     "MSG_W_PSENSOR_SWITCH": "0x6B",
+     "MSG_W_CTRL_OLED": "0x72",
+     "MSG_N_START_ERRORS_AND_EVENTS_REPORT": "0x73",
+     "MSG_R_GLASSES_IS_CLOSE_HEAD": "0x7A",
+     "MSG_R_GLASSES_BRIGHTNESS_LEVEL_NUM": "0x7B",
+     "MSG_W_DP_ESD_PARAM": "0x80",
+     "MSG_W_DP_HDCP_ENABLE": "0x81",
+     "MSG_W_DP_LEVEL": "0x83",
+     "MSG_W_KEY_FUNCTION": "0x84",
+     "MSG_W_OLED_DISPLAY_MAP_PARAM": "0x9D",
+     "MSG_R_OLED_DISPLAY_MAP_PARAM": "0x9E",
+     "MSG_R_SCREEN_STATUS": "0xA1",
+     "MSG_R_IMU_INTERRUPT_COUNT": "0xA2",
+     "MSG_R_GLASSES_DISPLAY_STATUS": "0xA3",
+     "MSG_W_REBOOT_DEVICE": "0xA4",
+     "MSG_R_SWITCH_CAL_OLED": "0xB6",
+     "MSG_W_SWITCH_CAL_OLED": "0xB7",
+     "MSG_R_EC_GEAR_NUM": "0xB0",
+     "MSG_R_EC_GEAR_NOW": "0xB1",
+     "MSG_W_SET_EC_GEAR": "0xB2",
+     "MSG_W_HOST_TYPE": "0x60",
+     "MSG_R_HW_VERSION": "0x27",
+     "MSG_W_DEFAULT_DISPLAY_2D_3D": "0xC0",
+     "MSG_R_DEFAULT_DISPLAY_2D_3D": "0xC1",
+     "MSG_R_TEMPERATURE_LEVEL": "0xC2",
+     "MSG_W_ENTER_SLEEP": "0x54",
+     "MSG_W_LED_WORK_MODE": "0xC3",
+     "MSG_R_LED_WORK_MODE": "0xC4",
+     "MSG_W_SERIAL_LOG_STATUS": "0xC5",
+     "MSG_R_SERIAL_LOG_STATUS": "0xC6",
+     "MSG_W_LED_RGB_MODE": "0xC7",
+     "MSG_R_LED_RGB_MODE": "0xC8",
+     "MSG_R_REAL_DISPLAY_MODE": "0x9F"
+    },
+    "MSG_W_HEARTBEAT": {
+     "message_id": "0x1A",
+     "host_timestamp": {
+      "type": "u64",
+      "offset": 0,
+      "bytes_size": 8
+     },
+     "viewer_recv_timestamp": {
+      "type": "u64",
+      "offset": 8,
+      "bytes_size": 8
+     },
+     "viewer_send_timestamp": {
+      "type": "u64",
+      "offset": 16,
+      "bytes_size": 8
+     }
+    },
+    "MSG_E_FOREHEAD_TEMPERATURE": {
+     "message_id": "0x6C12",
+     "temperature": {
+      "type": "s32",
+      "offset": 0,
+      "bytes_size": 4
+     }
+    },
+    "MSG_E_TEMPLE_TEMPERATURE": {
+     "message_id": "0x6C02",
+     "temperature": {
+      "type": "s32",
+      "offset": 0,
+      "bytes_size": 4
+     }
+    },
+    "MSG_E_SCREEN_ERR_LOG": {
+     "message_id": "0x6C03"
+    },
+    "MSG_E_PSENSOR": {
+     "message_id": "0x6C04",
+     "status": {
+      "type": "s32",
+      "offset": 0,
+      "bytes_size": 4
+     }
+    },
+    "MSG_E_KEY": {
+     "message_id": "0x6C05",
+     "key_type": {
+      "type": "u32",
+      "offset": 0,
+      "bytes_size": 4
+     },
+     "key_func": {
+      "type": "u32",
+      "offset": 4,
+      "bytes_size": 4
+     },
+     "key_param": {
+      "type": "u32",
+      "offset": 8,
+      "bytes_size": 4
+     }
+    },
+    "MSG_E_SLEEP": {
+     "message_id": "0x6C07",
+     "status": {
+      "type": "s32",
+      "offset": 0,
+      "bytes_size": 4
+     }
+    },
+    "MSG_E_7211_UPDATE_STATUS": {
+     "message_id": "0x6C08",
+     "status": {
+      "type": "s32",
+      "offset": 0,
+      "bytes_size": 4
+     }
+    },
+    "MSG_E_ERR_LOG": {
+     "message_id": "0x6C09"
+    },
+    "MSG_E_CRC_ERROR": {
+     "message_id": "0x6C0A"
+    },
+    "MSG_E_VSYNC": {
+     "message_id": "0x6C0B",
+     "sequence": {
+      "type": "u64",
+      "offset": 0,
+      "bytes_size": 8
+     },
+     "timestamp": {
+      "type": "u64",
+      "offset": 8,
+      "bytes_size": 8
+     }
+    },
+    "MSG_E_ERRORS_AND_EVENTS": {
+     "message_id": "0x6C15"
+    },
+    "MSG_E_SCREEN_STATUS_CHANGED": {
+     "message_id": "0x6C18",
+     "status": {
+      "type": "s32",
+      "offset": 0,
+      "bytes_size": 4
+     }
+    },
+    "MSG_E_OVER_TEMPERATURE_ISDANGER": {
+     "message_id": "0x6C19",
+     "status": {
+      "type": "s32",
+      "offset": 0,
+      "bytes_size": 4
+     }
+    }
+   }
+  },
+  {
+   "found_in": [
+    "libnr_api.so",
+    "libnr_rgb_camera.so",
+    "libnr_service.so"
+   ],
+   "descriptor": {
+    "protocol_version": "0x20210601",
+    "support_identifers": [
+     "539035137ULL"
+    ],
+    "imu": {
+     "imu_information": {
+      "product_name": "Camera-OV580",
+      "product_list": []
+     },
+     "report_id": {
+      "type": "u8",
+      "offset": 0,
+      "bytes_size": 1
+     },
+     "version": {
+      "type": "u8",
+      "offset": 1,
+      "bytes_size": 1,
+      "benchmark": 1
+     },
+     "temperature": {
+      "type": "u16",
+      "offset": 2,
+      "bytes_size": 2
+     },
+     "temperature_scale": {
+      "type": "f64",
+      "default": 0.4831
+     },
+     "temperature_offset": {
+      "type": "f64",
+      "default": 25.0
+     },
+     "timestamp": {
+      "type": "u64",
+      "offset": 4,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "gyro_numerator": {
+      "type": "u16",
+      "offset": 12,
+      "bytes_size": 2,
+      "benchmark": 4000
+     },
+     "gyro_denominator": {
+      "type": "u32",
+      "offset": 14,
+      "bytes_size": 4,
+      "benchmark": 65536
+     },
+     "gyro_0": {
+      "type": "u16",
+      "offset": 18,
+      "bytes_size": 2
+     },
+     "gyro_1": {
+      "type": "u16",
+      "offset": 20,
+      "bytes_size": 2
+     },
+     "gyro_2": {
+      "type": "u16",
+      "offset": 22,
+      "bytes_size": 2
+     },
+     "acc_numerator": {
+      "type": "u16",
+      "offset": 24,
+      "bytes_size": 2,
+      "benchmark": 32
+     },
+     "acc_denominator": {
+      "type": "u32",
+      "offset": 26,
+      "bytes_size": 4,
+      "benchmark": 65536
+     },
+     "acc_0": {
+      "type": "u16",
+      "offset": 30,
+      "bytes_size": 2
+     },
+     "acc_1": {
+      "type": "u16",
+      "offset": 32,
+      "bytes_size": 2
+     },
+     "acc_2": {
+      "type": "u16",
+      "offset": 34,
+      "bytes_size": 2
+     },
+     "mag_offset": {
+      "type": "u16",
+      "offset": 36,
+      "bytes_size": 2
+     },
+     "mag_denominator": {
+      "type": "u32",
+      "offset": 38,
+      "bytes_size": 4
+     },
+     "mag_0": {
+      "type": "u16",
+      "offset": 42,
+      "bytes_size": 2
+     },
+     "mag_1": {
+      "type": "u16",
+      "offset": 44,
+      "bytes_size": 2
+     },
+     "mag_2": {
+      "type": "u16",
+      "offset": 46,
+      "bytes_size": 2
+     },
+     "sensor_timestamp": {
+      "type": "u64",
+      "offset": 48,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "mag_update_flag": {
+      "type": "u64",
+      "offset": 56,
+      "bytes_size": 1
+     },
+     "gravity": {
+      "type": "f64",
+      "default": 9.8
+     },
+     "mag_scale": {
+      "type": "f64",
+      "default": 100
+     },
+     "transform": {
+      "type": "s32",
+      "default": 1
+     },
+     "frame_bytes": {
+      "type": "u32",
+      "default": 64
+     },
+     "endianness": {
+      "type": "u8",
+      "default": 0
+     }
+    }
+   }
+  },
+  {
+   "found_in": [
+    "libnr_api.so",
+    "libnr_rgb_camera.so",
+    "libnr_service.so"
+   ],
+   "descriptor": {
+    "protocol_version": "0x20220101",
+    "support_identifers": [
+     "539099393ULL"
+    ],
+    "imu": {
+     "imu_information": {
+      "product_name": "Camera-OV580",
+      "product_list": []
+     },
+     "report_id": {
+      "type": "u8",
+      "offset": 0,
+      "bytes_size": 1
+     },
+     "version": {
+      "type": "u8",
+      "offset": 1,
+      "bytes_size": 1,
+      "benchmark": 2
+     },
+     "temperature": {
+      "type": "u16",
+      "offset": 2,
+      "bytes_size": 2
+     },
+     "temperature_scale": {
+      "type": "f64",
+      "default": 0.007548309
+     },
+     "temperature_offset": {
+      "type": "f64",
+      "default": 25.0
+     },
+     "timestamp": {
+      "type": "u64",
+      "offset": 4,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "gyro_numerator": {
+      "type": "u16",
+      "offset": 12,
+      "bytes_size": 2,
+      "benchmark": 4000
+     },
+     "gyro_denominator": {
+      "type": "u32",
+      "offset": 14,
+      "bytes_size": 4,
+      "benchmark": 16777216
+     },
+     "gyro_0": {
+      "type": "u8",
+      "offset": 18,
+      "bytes_size": 3
+     },
+     "gyro_1": {
+      "type": "u8",
+      "offset": 21,
+      "bytes_size": 3
+     },
+     "gyro_2": {
+      "type": "u8",
+      "offset": 24,
+      "bytes_size": 3
+     },
+     "acc_numerator": {
+      "type": "u16",
+      "offset": 27,
+      "bytes_size": 2,
+      "benchmark": 32
+     },
+     "acc_denominator": {
+      "type": "u32",
+      "offset": 29,
+      "bytes_size": 4,
+      "benchmark": 16777216
+     },
+     "acc_0": {
+      "type": "u8",
+      "offset": 33,
+      "bytes_size": 3
+     },
+     "acc_1": {
+      "type": "u8",
+      "offset": 36,
+      "bytes_size": 3
+     },
+     "acc_2": {
+      "type": "u8",
+      "offset": 39,
+      "bytes_size": 3
+     },
+     "mag_offset": {
+      "type": "u16",
+      "offset": 42,
+      "bytes_size": 2
+     },
+     "mag_denominator": {
+      "type": "u32",
+      "offset": 44,
+      "bytes_size": 4
+     },
+     "mag_0": {
+      "type": "u16",
+      "offset": 48,
+      "bytes_size": 2
+     },
+     "mag_1": {
+      "type": "u16",
+      "offset": 50,
+      "bytes_size": 2
+     },
+     "mag_2": {
+      "type": "u16",
+      "offset": 52,
+      "bytes_size": 2
+     },
+     "sensor_timestamp": {
+      "type": "u64",
+      "offset": 54,
+      "bytes_size": 8,
+      "scale": 1
+     },
+     "mag_update_flag": {
+      "type": "u64",
+      "offset": 62,
+      "bytes_size": 1
+     },
+     "gravity": {
+      "type": "f64",
+      "default": 9.8
+     },
+     "mag_scale": {
+      "type": "f64",
+      "default": 100
+     },
+     "transform": {
+      "type": "s32",
+      "default": 1
+     },
+     "frame_bytes": {
+      "type": "u32",
+      "default": 64
+     },
+     "endianness": {
+      "type": "u8",
+      "default": 0
+     }
+    }
+   }
+  }
+ ]
+}

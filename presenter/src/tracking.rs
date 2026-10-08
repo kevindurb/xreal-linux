@@ -7,8 +7,9 @@
 //! y up, z back, with yaw zero at start.
 //!
 //! The filter is a Mahony-style complementary filter: integrate the gyro, and correct pitch and roll by nudging the
-//! estimated "up" toward the accelerometer's. There is no magnetometer, so yaw drifts with the gyro bias; the bias is
-//! estimated whenever the head is still.
+//! estimated "up" toward the accelerometer's. The IMU stream also carries an uncalibrated magnetometer (record type 4,
+//! not used here; see docs/findings.md), so yaw currently drifts with the gyro bias; the bias is estimated whenever
+//! the head is still.
 
 use std::io::Read;
 use std::net::TcpStream;

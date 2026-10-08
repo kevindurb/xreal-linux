@@ -65,6 +65,7 @@ A capture format (frames, IMU, timestamps) and a replay path that runs the same 
 
 ## Risks / Trade-offs
 
+- [The Eye does not stream in Follow mode with the Stabilizer off] → Observed on hardware: the camera stream is idle outside the glasses' own anchor mode. Task group 0 finds out whether a host request can start it (the vendor SDK has camera start/stop requests, ids documented in `docs/xreal-link-messages.md`), or whether the change must be re-scoped. Nothing below group 0 can be verified on hardware until this is settled.
 - [The Deck's CPU cannot run the estimator at 60 fps beside SteamVR] → Measure in task group 3 before integrating; reduce features/resolution, pin and nice the process, or drop to every second frame. This is the main go/no-go.
 - [The camera's field of view or exposure is poor for tracking] → The offline run on real recordings in a textured room decides; if poor, the change stops at the decoder and calibration.
 - [Time offset between camera and IMU is not constant or not recoverable from header bytes] → Estimate it in calibration and refine online; the 5 ms shake-test requirement catches it.
