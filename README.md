@@ -1,19 +1,53 @@
 # xreal-linux
 
-Notes and tooling from an effort to make **XREAL 1S** glasses (with the **XREAL Eye** camera) behave like a
-SteamVR-style gaming headset on Linux. Test host: Steam Deck running Bazzite 44 (Fedora Atomic / Kinoite).
+## Quick start
 
-Status: **exploration / reverse engineering**. Nothing here is a finished driver.
+Use **XREAL 1S** glasses as a **SteamVR headset** on Linux (3DoF: head rotation from the glasses' own sensors). Verified on a **Steam Deck**
+(Bazzite, desktop mode, Plasma on Wayland, AMD GPU). Other AMD PCs with Plasma on Wayland should work the same way; NVIDIA and Intel GPUs are
+**not** supported yet (untested), and the Eye camera (6DoF) is not used.
+
+You need: the glasses plugged in over USB-C, Steam with **SteamVR** installed (Steam app 250820) and started **once** so it has written its
+settings, and a second display enabled (the Deck's own screen) so desktop windows have somewhere to go besides the glasses.
+
+1. Download `xreal-linux-x86_64.AppImage` from the [latest release](https://github.com/kevindurb/xreal-linux/releases/latest) and make it
+   executable (`chmod +x`, or *Properties > Permissions* in the file manager).
+2. Run it (double-click, or `./xreal-linux-x86_64.AppImage`). Answer the questions: it installs for your user only (no root), registers the
+   driver with SteamVR, offers to enable a background service, and offers to change four SteamVR settings (each is shown and asked about, and
+   a backup is kept). `--dry-run` shows what it would do without changing anything.
+   *If the AppImage does not start because FUSE is missing, run it as `./xreal-linux-x86_64.AppImage --appimage-extract-and-run`.*
+3. On the glasses, set **Follow mode** (not Anchor), **Stabilizer off** and **auto sleep off** in their own menu (double-click the X button,
+   then Display, ...). The host can neither read nor set these.
+4. Start SteamVR from Steam. The glasses switch to full side-by-side by themselves and the headset appears; when SteamVR quits they go back
+   to the mode they were in. Each switch re-plugs the glasses' display for about two seconds, so the desktop may rearrange windows.
+   Nothing is done to the glasses while SteamVR is not running, so you can use them as a normal monitor.
+
+Afterwards, from the installed copy (`~/.local/share/xreal-linux/xreal-linux.AppImage`) or the downloaded file:
+
+| Command | What it does |
+|---|---|
+| `check` | Reports what is in place and what is not (changes nothing); exits non-zero on a failure |
+| `fix` | Sets the SteamVR settings the setup needs, asking for each (SteamVR must not be running) |
+| `status` | Shows the installed version, the service, the glasses' display mode and the last session's log |
+| `uninstall` | Undoes everything `setup` did: the service, the driver registration, the changed settings, the installed files |
+| `restore-display` | Puts the glasses back in the 2D mode they were in before a session, if a restore is still pending |
+
+The presenter's log is in the journal: `journalctl --user -u xreal-linux`. Options for the service go in
+`~/.config/xreal-linux/service.env` (`XREAL_REPROJECT=0` turns reprojection off, `XREAL_EXTRA_ARGS="..."` adds presenter flags).
+
+**Not promised:** the Deck's *game mode* (whether the background service runs there is not known yet), Flatpak Steam, and GPUs other than AMD.
+
+## Status
+
+The rest of this file and `docs/` are the engineering notes: how the pieces work and what was measured.
 
 | Piece | Status |
 |---|---|
-| Video (DisplayPort over USB-C) | Works as a plain monitor in several aspect modes: 16:10 (1920x1200) and 16:9 (1920x1080) at 60, 90 and 120 Hz, and ultrawide (e.g. 3840x1080, 32:9) |
-| Audio | Works (standard USB audio class) |
-| Buttons | Work (HID mouse / consumer control) |
-| Head tracking, 3DoF (IMU) | Protocol decoded, already implemented upstream (see below). Not yet run end to end on the 1S |
-| Eye camera | Stream found and partly decoded, format not fully understood |
-| 6DoF / SLAM | Not started |
-| SteamVR / OpenXR integration | Not started |
+| Video (DisplayPort over USB-C) | Works as a plain monitor in several aspect modes; full side-by-side (3840x1080) for VR, set automatically |
+| Audio, buttons | Work (standard USB audio class and HID) |
+| Head tracking, 3DoF (IMU) | Works; the yaw drifts (the magnetometer is not usable) |
+| SteamVR integration | Works: a driver-direct-mode driver plus a presenter that owns the glasses' display |
+| Install | One AppImage with a guided setup, a socket-activated user service, undo |
+| Eye camera, 6DoF / SLAM | Stream partly decoded; a host-started camera sends only four frames; parked |
 
 ## Goal
 
@@ -34,7 +68,7 @@ for what is unverified.
 - `tools/imu_web/` - a browser page that streams live IMU graphs and walks you through direction tests
   (yaw / pitch / roll) to pin down which gyro axis and sign each head motion is. See below.
 
-All of these only read from the glasses. Nothing in this repo writes to the glasses.
+The scripts above only read from the glasses. The presenter's only writes are the display input mode: full side-by-side while SteamVR uses the glasses, and back to the previous 2D mode afterwards (see `docs/handoff.md` for the rules).
 
 ### IMU axis check page
 

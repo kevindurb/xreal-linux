@@ -10,7 +10,7 @@
 ## 2. Handshake: protocol version and `glasses_present`
 
 - [x] 2.1 The driver's first message carries a protocol version; the presenter's reply carries it and `glasses_present` (glasses answer on the control port; false with a reason otherwise). On a mismatch the presenter logs both versions and refuses to present. Verify: unit tests for match and mismatch; on the Deck, an old driver with a new presenter produces the logged two-version message.
-- [ ] 2.2 The driver reports no HMD until it has a positive reply, and reports one again when it gets it. Verify: on the Deck with the glasses unplugged SteamVR starts with no XREAL headset (driver log line); plugging them in and restarting SteamVR shows the headset.
+- [x] 2.2 The driver reports no HMD until it has a positive reply, and reports one again when it gets it. Verify: on the Deck with the glasses unplugged SteamVR starts with no XREAL headset (driver log line); plugging them in and restarting SteamVR shows the headset.
 
 ## 3. Presenter lifecycle
 
@@ -26,7 +26,7 @@
 - [x] 4.2 Sequence the SBS set after the driver connects and before the window opens (replacing the `vr_session.sh` one-shot for the service), wait for the single 3840x1080 mode, and record the previous mode ("was 2D" or "was SBS") in the state directory before the first set. Verify: on the Deck from 2D the glasses reach SBS and the window appears on them (journal shows each request, reply and the time taken); from SBS no setter is sent; the existing `--no-set-sbs` still disables it.
 - [x] 4.3 Restore on driver disconnect and whenever the service stops, including a crash: the unit's `ExecStopPost` reads the recorded mode and sets 2D only for "was 2D", with its own small bound. Verify: after quitting SteamVR the glasses return to 2D and the DRM mode list matches the one recorded before; with `kill -9` on the presenter the unit still restores; from "was SBS" nothing is sent.
 - [ ] 4.4 Check the existing mid-session behaviour inside the service: the glasses drop to 2D (sleep, replug), the reconnect logic re-sets SBS within the three-per-run limit, and the window follows (task 3.4). Verify: on the Deck sleep and wake the glasses during a session; SBS returns and presenting resumes; with the control port blocked the retries stop at the limit and the journal says why.
-- [ ] 4.5 Unreachable or silent glasses: `glasses_present` is false with the reason, and `check` reports a recorded mode that was never restored. Verify: with the control port blocked the handshake reports it; after a simulated crash without restore `check` flags the recorded mode.
+- [x] 4.5 Unreachable or silent glasses: `glasses_present` is false with the reason, and `check` reports a recorded mode that was never restored. Verify: with the control port blocked the handshake reports it; after a simulated crash without restore `check` flags the recorded mode.
 
 ## 5. AppImage and `setup`
 

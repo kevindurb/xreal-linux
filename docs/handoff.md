@@ -115,7 +115,7 @@ Open:
 | Change | Tasks | State |
 |---|---|---|
 | `add-6dof-camera-tracking` | 4 done, 25 open | **parked** by the user 2026-10-08 (camera start unsolved, see section 7) |
-| `add-installable-package` | 0 of 20 | not started |
+| `add-installable-package` | see `openspec/changes/add-installable-package/tasks.md` | **mostly built and verified on the Deck 2026-10-08**; open: sleep/wake and unplug by hand (4.4, 2.2/3.4 physical), a clean-account quick-start run (5.11), CI on a pushed tag (6.1), the wearer end-to-end (7.1), game-mode and Flatpak experiments (7.2, 7.3) |
 | `support-other-gpus` | 0 of 17 | not started |
 | `2026-10-07-fix-dashboard-glitches-and-judder` | archived | done |
 
@@ -124,3 +124,20 @@ Open:
 - Glasses: full SBS (set by the host earlier), Follow mode, Stabilizer off; the camera Start was used since the last replug.
 - Deck: no VR session and no presenter, `xreal-session` unit running. The latest presenter and driver are installed. Waydroid stopped and reverted; `adb` removed.
 - Repo: everything committed and pushed to `main`.
+
+## 9. The installable package (2026-10-08)
+
+What exists, all in this repo and measured on the Deck (details in `docs/findings.md`, "Build baseline" and "Cold start"):
+
+- `packaging/build.sh` builds driver and presenter in the pinned Steam Runtime sniper SDK (image digest in the script) into `dist/`, `packaging/check_symbols.py` fails above GLIBC_2.31,
+  `packaging/appimage.sh` makes `dist/xreal-linux-x86_64.AppImage` (about 2.7 MB; host Vulkan/Wayland used). Needs `/usr/bin/podman` (the linuxbrew one cannot run rootless here).
+- The presenter binary is also the user tool: `xreal-presenter setup | check | fix | status | uninstall | restore-display | serve` (sources in `presenter/src/setup/`). With no arguments inside an AppImage it runs `setup`.
+- `setup` installs to `~/.local/share/xreal-linux/`, registers the driver with `vrpathreg.sh` (replacing, and remembering, a checkout registration), writes `xreal-linux.socket`/`.service` to `~/.config/systemd/user/`, and offers the four SteamVR settings.
+  The socket owns `@xreal-presenter-<uid>`; the service runs `... serve` when the driver connects and restores the display mode in `ExecStopPost`.
+- Driver/presenter handshake (HELLO/HELLO_REPLY, protocol version 1): the driver waits up to 30 s in `Init` and reports no HMD without a positive reply.
+- The presenter finds the glasses' output by EDID (`MRG` 0x4102), opens the window only when the driver is connected and the output is in the single 3840x1080 mode (after a 1 s settle), closes it when the output goes away, exits 5 s after the driver disconnects (service mode),
+  and polls the input mode every 5 s while it expects full SBS so a mid-session drop to 2D reconnects and sets SBS again (three setters per run).
+- Display mode: the previous mode is recorded in `~/.local/state/xreal-linux/display-mode` before the first setter (`was-2d`/`was-sbs`); `restore-display` sets 2D only for `was-2d`.
+- The checkout scripts still work: `tools/vr_session.sh` stops/restarts the units around a manual session and restores the display mode on `stop`; `tools/doctor.sh` runs the binary's `check`.
+- Test hooks: `XREAL_CONTROL_ADDR=host:port` points the control-port client elsewhere (a dead or silent port), `XREAL_SETTLE_MS` changes the window settle time, `XREAL_DRIVER_DIR` names a checkout's driver for `check`.
+- The Deck's dev account was used for the tests (`setup`, `uninstall` restored the checkout registration). Run `uninstall` before going back to the checkout workflow, or `setup` again to use the package.

@@ -1,0 +1,54 @@
+name: release
+
+# Builds the AppImage from a tag in the pinned Steam Runtime (sniper) SDK, checks the glibc symbol versions, and attaches the file
+# to the release. A failing symbol check (or a failing test) fails the workflow and nothing is attached.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Python tests (symbol check, release contents)
+        run: |
+          python3 packaging/tests/test_check_symbols.py
+          python3 packaging/tests/test_check_contents.py
+
+      - name: Build the driver and the presenter in the pinned SDK (also runs the symbol-version check)
+        run: CONTAINER_ENGINE=docker packaging/build.sh
+
+      - name: Presenter unit tests in the same SDK
+        run: |
+          docker run --rm -v "$PWD":/src -v xreal-sniper-cargo:/root/.cargo -v xreal-sniper-rustup:/root/.rustup -w /src/presenter \
+            "$(grep -o 'registry.gitlab.steamos.cloud[^}"]*' packaging/build.sh | head -1)" \
+            bash -c 'export PATH=/root/.cargo/bin:$PATH; cargo test --release --locked --target-dir /src/build-out/target-test'
+
+      - name: Assemble the AppImage
+        run: packaging/appimage.sh
+
+      - name: Symbol check on the files inside the AppImage
+        run: |
+          python3 packaging/check_symbols.py build-out/AppDir/usr/lib/xreal-linux/xreal-presenter build-out/AppDir/usr/lib/xreal-linux/driver/xreal/bin/linux64/driver_xreal.so
+          python3 packaging/check_contents.py build-out/AppDir
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xreal-linux-x86_64.AppImage
+          path: dist/xreal-linux-x86_64.AppImage
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "AppImage built from $GITHUB_SHA in the pinned Steam Runtime SDK."
+          gh release upload "$GITHUB_REF_NAME" dist/xreal-linux-x86_64.AppImage --clobber
