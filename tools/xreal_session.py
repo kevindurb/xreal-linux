@@ -37,7 +37,7 @@ GETTERS = {
     10013: "NRGlassesGetSWVersion", 10015: "NRGlassesGetConfig", 10016: "NRGlassesGetSupportedDevices",
     10025: "NRGlassesGetID", 10029: "NRGlassesGetDspVersion", 10085: "NRDpGetWorkingState", 10273: "NRDpGetInputMode",
     10003: "NRPowerSaveIsEnable", 10005: "NRPowerSaveGetSleepTime", 10008: "NRProximityIsEnable", 10044: "NRProximityGetWearingState",
-    10039: "NRProximityGetFarThreshold", 10041: "NRProximityGetNearThreshold",
+    10039: "NRProximityGetFarThreshold", 10041: "NRProximityGetNearThreshold", 10018: "NRGlassesGetMagCalibrationData",
 }
 CAMERA = {10047: "NRGrayscaleCameraCreate", 10053: "NRGrayscaleCameraStart", 10054: "NRGrayscaleCameraStop"}
 # Setters with a numeric value: id -> name; the only accepted bodies are Base{3: {1: value}} for the values listed in SETTER_BODIES.

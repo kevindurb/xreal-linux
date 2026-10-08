@@ -567,3 +567,12 @@ The glasses were put in full SBS by the presenter's `--set-sbs` (one `NRDpSetInp
 - **`--factory-distortion`:** the corners curved away from the wearer; no better, worse than plain.
 - **`--factory-distortion-reversed`:** all four corners were cut off and only a sliver of border showed at the top middle; also worse than plain.
 - **Conclusion:** applying the factory `display_distortion` grid in either direction made the picture worse. The glasses seem to correct their optics themselves (or the grid means something else), so the flags stay off by default and the grid is not worth pursuing further without the vendor's definition of it.
+
+### Magnetometer calibration on the Deck: the fit does not converge (2026-10-08)
+
+`xreal-presenter --mag-calibrate`, glasses in full SBS showing the desktop, wearer turning them through all directions twice (about 45 s, 18,000 samples at 400 Hz).
+
+- **No stable hard-iron offset.** The fitted centre's X component walked from about -12 uT to -46 uT to -145 uT during the run (a fixed offset would not move), the radius from 23 to 93 uT, the per-axis scale from (0.6, 2.7, 0.6) to (0.5, 1.7, 1.2), the residual stayed at 11-18 % (never under the 3-6 % seen on partial coverage), and the counted directions flipped between 18 and 22 of 26. Nothing was saved.
+- **The glasses hold no stored calibration:** `NRGlassesGetMagCalibrationData` (10018, read-only, `18 00`) was answered `22 00` (empty), consistent with the config's default mag bias and scale.
+- **Reading:** the field the sensor reports depends on something that changes while the glasses move or run (the earlier note that the sensor sits beside the display and USB electronics; the rest magnitude was 81 uT in one session and 49.6 uT in another). Until that is understood, a hard-iron fit is not trustworthy, and `--mag-yaw` stays experimental and off.
+- **What would settle it:** a raw capture of the field at rest for several minutes in each display state (regular, SBS, display off) to see whether it drifts with the display, and a rotation with the glasses far from the Deck. Not done.
