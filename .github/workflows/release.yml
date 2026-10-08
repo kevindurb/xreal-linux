@@ -33,7 +33,10 @@ jobs:
             bash -c 'export PATH=/root/.cargo/bin:$PATH; cargo test --release --locked --target-dir /src/build-out/target-test'
 
       - name: Assemble the AppImage
-        run: packaging/appimage.sh
+        # appimagetool validates the .desktop file with desktop-file-validate
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq desktop-file-utils
+          packaging/appimage.sh
 
       - name: Symbol check on the files inside the AppImage
         run: |
