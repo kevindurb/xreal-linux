@@ -4,14 +4,13 @@
 //! glasses really show a different image to each eye in their SBS mode. It will grow into the thing that imports
 //! SteamVR's per-eye textures and presents them.
 //!
-//! usage: xreal-presenter [--monitor NAME] [--reproject] [--factory-distortion | --factory-distortion-reversed] [--test-grid] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default monitor name: DP-1)
+//! usage: xreal-presenter [--monitor NAME] [--reproject] [--eye-rotation | --eye-rotation-reversed] [--test-grid] [--no-set-sbs] [--no-imu-calibration] [--print-calibration] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default monitor name: DP-1)
 //!
 //! Left half of the screen = left eye (red tint), right half = right eye (blue tint). A green square slides across
 //! each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
 //! float at a different depth from the frame. White borders and a white centre line show the exact edges.
 
 mod glasses;
-mod magcal;
 mod tracking;
 mod warp;
 
@@ -231,23 +230,13 @@ struct WarpPipe {
     pool: vk::DescriptorPool,
     layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
-    grid_layout: vk::DescriptorSetLayout,
-    grid_pool: vk::DescriptorPool,
-    grid_set: vk::DescriptorSet,
-    grid_buf: vk::Buffer,
-    grid_mem: vk::DeviceMemory,
-    grid_ptr: *mut f32,
-    grid_version: Option<u32>,          // version of the factory grids last looked at
-    grid_dims: Option<(usize, usize)>,  // columns and rows of the grids in the buffer, None while nothing usable is uploaded
     dummy_image: vk::Image,             // stands in for an eye image when drawing the test grid without SteamVR
     dummy_mem: vk::DeviceMemory,
     dummy_view: vk::ImageView,
     dummy_set: vk::DescriptorSet,
 }
 
-/// Room for both eyes' factory distortion grids, as vec2 entries.
-const GRID_CAPACITY: usize = 2 * 64 * 64;
-const PUSH_BYTES: usize = 112;
+const PUSH_BYTES: usize = 96;
 const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// Debug capture of what the glasses show (the centre of each eye's half), copied by the frame's own submission so that
@@ -300,7 +289,6 @@ struct Gfx {
     vsync_seq: u32,
     warp: Option<WarpPipe>,
     reproject: bool,
-    distortion: u8,   // 0 off, 1 factory grid, 2 reversed factory grid
     test_grid: bool,  // draw a straight-line grid instead of the eye images
     dump_dir: Option<std::path::PathBuf>,
     dump_remaining: u32,
@@ -325,7 +313,7 @@ struct Gfx {
 }
 
 impl Gfx {
-    unsafe fn new(window: &Window, reproject: bool, distortion: u8, test_grid: bool) -> Result<Gfx, Box<dyn std::error::Error>> {
+    unsafe fn new(window: &Window, reproject: bool, test_grid: bool) -> Result<Gfx, Box<dyn std::error::Error>> {
         let entry = Entry::load()?;
         let display = window.display_handle()?.as_raw();
         let win = window.window_handle()?.as_raw();
@@ -410,14 +398,14 @@ impl Gfx {
             _entry: entry, instance, surface_loader, surface, phys, device, queue, queue_family, swapchain_loader,
             swapchain: vk::SwapchainKHR::null(), images: vec![], views: vec![], format: vk::Format::B8G8R8A8_UNORM,
             extent: vk::Extent2D { width: 1, height: 1 }, pool, cmd, image_available, render_done: vec![], in_flight,
-            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, distortion, test_grid, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, capture: None, capture_pending: None, fallbacks: 0, last_delta_deg: 0.0,
+            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, test_grid, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, capture: None, capture_pending: None, fallbacks: 0, last_delta_deg: 0.0,
             semaphore_fd, read_ready, present_wait, present_id: 0, present_wait_timeouts: 0, present_wait_active: true, present_wait_retry: std::time::Instant::now(), used_frame: None,
             new_frames: 0, new_frame_age_ms: (0.0, 0.0), last_render_q: None, render_steps_deg: vec![],
         };
         g.create_swapchain(window.inner_size())?;
-        if reproject || distortion > 0 || test_grid {
+        if reproject || test_grid || warp::eye_rotation_mode() != 0 {
             g.warp = Some(g.create_warp()?);
-            println!("warp pass enabled: reprojection {}, factory distortion {}, test grid {}", reproject, ["off", "on", "reversed"][distortion as usize], test_grid);
+            println!("warp pass enabled: reprojection {}, test grid {}, eye rotation mode {}", reproject, test_grid, warp::eye_rotation_mode());
         }
         Ok(g)
     }
@@ -602,11 +590,7 @@ impl Gfx {
                 .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET),
             None,
         )?;
-        let grid_binding = [vk::DescriptorSetLayoutBinding::default()
-            .binding(0).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
-        let grid_layout = self.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&grid_binding), None)?;
-        let layouts = [desc_layout, grid_layout];
+        let layouts = [desc_layout];
         let ranges = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::FRAGMENT).offset(0).size(PUSH_BYTES as u32)];
         let layout = self.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts).push_constant_ranges(&ranges), None)?;
 
@@ -634,25 +618,6 @@ impl Gfx {
         let pipeline = self.device.create_graphics_pipelines(vk::PipelineCache::null(), &[ci], None).map_err(|e| e.1)?[0];
         self.device.destroy_shader_module(vs, None);
         self.device.destroy_shader_module(fs, None);
-
-        let grid_bytes = (GRID_CAPACITY * 8) as u64;
-        let grid_buf = self.device.create_buffer(&vk::BufferCreateInfo::default().size(grid_bytes).usage(vk::BufferUsageFlags::STORAGE_BUFFER), None)?;
-        let reqs = self.device.get_buffer_memory_requirements(grid_buf);
-        let want = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-        let mt = (0..self.mem_props.memory_type_count)
-            .find(|&j| reqs.memory_type_bits & (1 << j) != 0 && self.mem_props.memory_types[j as usize].property_flags.contains(want))
-            .ok_or("no host-visible memory type for the distortion grid")?;
-        let grid_mem = self.device.allocate_memory(&vk::MemoryAllocateInfo::default().allocation_size(reqs.size).memory_type_index(mt), None)?;
-        self.device.bind_buffer_memory(grid_buf, grid_mem, 0)?;
-        let grid_ptr = self.device.map_memory(grid_mem, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut f32;
-        std::ptr::write_bytes(grid_ptr, 0, GRID_CAPACITY * 2);
-        let grid_sizes = [vk::DescriptorPoolSize::default().ty(vk::DescriptorType::STORAGE_BUFFER).descriptor_count(1)];
-        let grid_pool = self.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&grid_sizes), None)?;
-        let grid_layouts = [grid_layout];
-        let grid_set = self.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(grid_pool).set_layouts(&grid_layouts))?[0];
-        let buf_info = [vk::DescriptorBufferInfo::default().buffer(grid_buf).offset(0).range(grid_bytes)];
-        self.device.update_descriptor_sets(&[vk::WriteDescriptorSet::default().dst_set(grid_set).dst_binding(0)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&buf_info)], &[]);
 
         let dummy_image = self.device.create_image(
             &vk::ImageCreateInfo::default().image_type(vk::ImageType::TYPE_2D).format(vk::Format::R8G8B8A8_UNORM)
@@ -690,40 +655,16 @@ impl Gfx {
         self.device.free_command_buffers(self.pool, &cmds);
 
         Ok(WarpPipe {
-            sampler, desc_layout, pool, layout, pipeline, grid_layout, grid_pool, grid_set, grid_buf, grid_mem, grid_ptr,
-            grid_version: None, grid_dims: None, dummy_image, dummy_mem, dummy_view, dummy_set,
+            sampler, desc_layout, pool, layout, pipeline, dummy_image, dummy_mem, dummy_view, dummy_set,
         })
     }
 
-    /// Upload the factory distortion grids once they arrive from the control port (or again if they change).
-    unsafe fn sync_distortion(&mut self) {
-        if self.distortion == 0 { return; }
-        let (version, grids) = warp::distortion();
-        let Some(w) = self.warp.as_mut() else { return };
-        if w.grid_version == Some(version) { return; }
-        w.grid_version = Some(version);
-        match grids {
-            Some(g) if 2 * g.cols * g.rows <= GRID_CAPACITY => {
-                for (k, point) in g.left.iter().chain(g.right.iter()).enumerate() {
-                    *w.grid_ptr.add(2 * k) = point[0];
-                    *w.grid_ptr.add(2 * k + 1) = point[1];
-                }
-                w.grid_dims = Some((g.cols, g.rows));
-                println!("factory distortion grid loaded ({} x {} points per eye)", g.cols, g.rows);
-            }
-            _ => {
-                w.grid_dims = None;
-                println!("no usable factory distortion grid; drawing without it");
-            }
-        }
-    }
-
     /// Reprojection pass: draw each eye by sampling its image along the lines of sight the head has turned to since
-    /// SteamVR rendered it. `rows` is the rotation (three vec4 rows) from warp::push_rows.
-    unsafe fn record_warp(&mut self, cmd: vk::CommandBuffer, idx: usize, dst: vk::Image, e: Option<&Eyes>, rows: [f32; 12]) {
-        let (pipeline, layout, grid_set, dummy_set, grid_dims) = {
+    /// SteamVR rendered it. `rows` is each eye's rotation (three vec4 rows) from warp::eye_rows.
+    unsafe fn record_warp(&mut self, cmd: vk::CommandBuffer, idx: usize, dst: vk::Image, e: Option<&Eyes>, rows: [[f32; 12]; 2]) {
+        let (pipeline, layout, dummy_set) = {
             let w = self.warp.as_ref().unwrap();
-            (w.pipeline, w.layout, w.grid_set, w.dummy_set, w.grid_dims)
+            (w.pipeline, w.layout, w.dummy_set)
         };
         let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
         let to_attachment = vk::ImageMemoryBarrier::default()
@@ -751,15 +692,11 @@ impl Gfx {
         let (w, h) = (self.extent.width, self.extent.height);
         let half = w / 2;
         let mut push = [0f32; PUSH_BYTES / 4];
-        push[..12].copy_from_slice(&rows);
         push[12..16].copy_from_slice(&warp::fov());
-        let (cols, grid_rows) = grid_dims.unwrap_or((0, 0));
-        self.device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, layout, 1, &[grid_set], &[]);
         for eye in 0..2usize {
+            push[..12].copy_from_slice(&rows[eye]);
             push[16..20].copy_from_slice(&e.map_or([0.0, 0.0, 1.0, 1.0], |e| e.bounds[eye]));
-            let mode = if grid_dims.is_some() { self.distortion as f32 } else { 0.0 };
-            push[20..24].copy_from_slice(&[mode, self.test_grid as u8 as f32, (eye * cols * grid_rows) as f32, cols as f32]);
-            push[24..28].copy_from_slice(&[grid_rows as f32, 0.0, 0.0, 0.0]);
+            push[20..24].copy_from_slice(&[self.test_grid as u8 as f32, 0.0, 0.0, 0.0]);
             let bytes = std::slice::from_raw_parts(push.as_ptr() as *const u8, PUSH_BYTES);
             let x = (eye as u32 * half) as i32;
             self.device.cmd_set_viewport(cmd, 0, &[vk::Viewport { x: x as f32, y: 0.0, width: half as f32, height: h as f32, min_depth: 0.0, max_depth: 1.0 }]);
@@ -1093,7 +1030,6 @@ impl Gfx {
         self.device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
         self.device.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
         let image = self.images[idx as usize];
-        self.sync_distortion();
         let mut wait = vec![self.image_available];
         let mut stages = vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         match eyes {
@@ -1104,26 +1040,27 @@ impl Gfx {
                 }
                 // Reproject when we have the pose SteamVR rendered for and a current tracked pose; otherwise plain blit.
                 let mut delta = None;
-                let rows = if self.reproject && self.warp.is_some() {
+                let head_rotation = if self.reproject && self.warp.is_some() {
                     e.render_q.and_then(|rq| {
                         let p = *pose.lock().unwrap();
                         if p.valid {
                             let d = (rq[0] * p.q[0] + rq[1] * p.q[1] + rq[2] * p.q[2] + rq[3] * p.q[3]).abs().min(1.0);
                             delta = Some(2.0 * d.acos().to_degrees());
-                            Some(warp::push_rows(&warp::view_delta(rq, p.q)))
+                            Some(warp::view_delta(rq, p.q))
                         } else { None }
                     })
                 } else {
                     None
                 };
                 if let Some(d) = delta { self.last_delta_deg = d; }
-                let rows = rows.or_else(|| (self.warp.is_some() && (self.distortion > 0 || self.test_grid)).then(|| warp::push_rows(&IDENTITY)));
+                let needs_pass = self.test_grid || warp::eye_rotation_mode() != 0;
+                let rows = head_rotation.or_else(|| (self.warp.is_some() && needs_pass).then_some(IDENTITY)).map(|m| warp::eye_rows(&m));
                 match rows {
                     Some(r) => self.record_warp(cmd, idx as usize, image, Some(&e), r),
                     None => self.record_blit(cmd, image, e.imgs, e.bounds),
                 }
             }
-            None if self.test_grid && self.warp.is_some() => self.record_warp(cmd, idx as usize, image, None, warp::push_rows(&IDENTITY)),
+            None if self.test_grid && self.warp.is_some() => self.record_warp(cmd, idx as usize, image, None, warp::eye_rows(&IDENTITY)),
             None => self.record_pattern(cmd, idx as usize, image, t),
         }
         if let Some(i) = capture_index {
@@ -1175,10 +1112,6 @@ impl Drop for Gfx {
                 self.device.destroy_descriptor_pool(w.pool, None);
                 self.device.destroy_descriptor_set_layout(w.desc_layout, None);
                 self.device.destroy_sampler(w.sampler, None);
-                self.device.destroy_descriptor_pool(w.grid_pool, None);
-                self.device.destroy_descriptor_set_layout(w.grid_layout, None);
-                self.device.destroy_buffer(w.grid_buf, None);
-                self.device.free_memory(w.grid_mem, None);
                 self.device.destroy_image_view(w.dummy_view, None);
                 self.device.destroy_image(w.dummy_image, None);
                 self.device.free_memory(w.dummy_mem, None);
@@ -1192,6 +1125,11 @@ impl Drop for Gfx {
     }
 }
 
+/// Asking for fullscreen on the same output again did not move the window after the glasses changed mode, so every other attempt leaves fullscreen first.
+fn leave_fullscreen_first(attempt: u32) -> bool {
+    attempt % 2 == 0
+}
+
 struct App {
     monitor_name: String,
     window: Option<Window>,
@@ -1201,8 +1139,8 @@ struct App {
     last_report: Instant,
     shared: Arc<Mutex<Shared>>,
     last_monitor_check: Instant,
+    move_attempts: u32,
     reproject: bool,
-    distortion: u8,
     test_grid: bool,
     dump_dir: Option<std::path::PathBuf>,
     dump_count: u32,
@@ -1227,7 +1165,7 @@ impl ApplicationHandler for App {
         let window = el
             .create_window(Window::default_attributes().with_title("XREAL presenter").with_fullscreen(Some(Fullscreen::Borderless(chosen))))
             .expect("create window");
-        let mut gfx = unsafe { Gfx::new(&window, self.reproject, self.distortion, self.test_grid) }.expect("vulkan init");
+        let mut gfx = unsafe { Gfx::new(&window, self.reproject, self.test_grid) }.expect("vulkan init");
         gfx.dump_dir = self.dump_dir.clone();
         gfx.dump_count = self.dump_count;
         self.gfx = Some(gfx);
@@ -1285,11 +1223,12 @@ impl ApplicationHandler for App {
             if self.last_monitor_check.elapsed() >= std::time::Duration::from_millis(500) {
                 self.last_monitor_check = Instant::now();
                 let current = w.current_monitor().and_then(|m| m.name());
-                if current.as_deref() != Some(self.monitor_name.as_str()) {
-                    if let Some(m) = w.available_monitors().find(|m| m.name().as_deref() == Some(self.monitor_name.as_str())) {
-                        println!("window is on {:?}; moving it to {}", current, self.monitor_name);
-                        w.set_fullscreen(Some(Fullscreen::Borderless(Some(m))));
-                    }
+                if current.as_deref() == Some(self.monitor_name.as_str()) {
+                    self.move_attempts = 0;
+                } else if let Some(m) = w.available_monitors().find(|m| m.name().as_deref() == Some(self.monitor_name.as_str())) {
+                    println!("window is on {:?}; moving it to {} (attempt {})", current, self.monitor_name, self.move_attempts + 1);
+                    w.set_fullscreen(if leave_fullscreen_first(self.move_attempts) { None } else { Some(Fullscreen::Borderless(Some(m))) });
+                    self.move_attempts += 1;
                 }
             }
             w.request_redraw();
@@ -1300,15 +1239,14 @@ impl ApplicationHandler for App {
 fn main() {
     let mut monitor_name = "DP-1".to_string();
     let mut reproject = false;
-    let (mut distortion, mut test_grid) = (0u8, false);
+    let mut test_grid = false;
     let mut sim_pose = false;
     let mut sim_yaw = 25.0f64;
     let mut sim_pitch = 0.0f64;
     let mut sim_pitch_amp = 12.0f64;
     let mut dump_count = 30u32;
     let mut dump_dir: Option<std::path::PathBuf> = None;
-    let (mut use_imu_calibration, mut mag_yaw, mut set_sbs, mut print_calibration) = (true, false, false, false);
-    let (mut mag_calibrate, mut mag_report) = (false, false);
+    let (mut use_imu_calibration, mut set_sbs, mut print_calibration) = (true, true, false);
     if let Some(d) = &dump_dir { let _ = d; }
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -1316,22 +1254,16 @@ fn main() {
             monitor_name = args.next().expect("--monitor needs a name");
         } else if a == "--reproject" {
             reproject = true;
-        } else if a == "--factory-distortion" {
-            distortion = 1;
-        } else if a == "--factory-distortion-reversed" {
-            distortion = 2;
+        } else if a == "--eye-rotation" {
+            warp::set_eye_rotation_mode(1);
+        } else if a == "--eye-rotation-reversed" {
+            warp::set_eye_rotation_mode(2);
         } else if a == "--test-grid" {
             test_grid = true;
         } else if a == "--no-imu-calibration" {
             use_imu_calibration = false;
-        } else if a == "--mag-yaw" {
-            mag_yaw = true;
-        } else if a == "--mag-calibrate" {
-            mag_calibrate = true;
-        } else if a == "--mag-report" {
-            mag_report = true;
-        } else if a == "--set-sbs" {
-            set_sbs = true;
+        } else if a == "--no-set-sbs" {
+            set_sbs = false;
         } else if a == "--print-calibration" {
             print_calibration = true;
         } else if a == "--sim-pose" {
@@ -1350,7 +1282,7 @@ fn main() {
     }
     glasses::uptime_s();
     let calibration: glasses::SharedCalibration = Arc::new(Mutex::new(None));
-    { let cal = calibration.clone(); std::thread::spawn(move || glasses::run(cal, set_sbs)); }
+    { let cal = calibration.clone(); std::thread::spawn(move || glasses::run(cal, set_sbs && !print_calibration)); }
     if print_calibration {
         for _ in 0..120 {
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1361,12 +1293,6 @@ fn main() {
         }
         eprintln!("no calibration within 12 s");
         std::process::exit(1);
-    }
-    if mag_calibrate {
-        std::process::exit(magcal::run_calibrate(calibration));
-    }
-    if mag_report {
-        std::process::exit(magcal::run_report(calibration, use_imu_calibration, 60.0));
     }
     { let m = monitor_name.clone(); std::thread::spawn(move || glasses::watch_display_modes(m)); }
     let el = EventLoop::new().expect("event loop");
@@ -1381,9 +1307,21 @@ fn main() {
     } else {
         let p = pose.clone();
         let cal = calibration.clone();
-        std::thread::spawn(move || tracking::run(p, cal, use_imu_calibration, mag_yaw));
+        std::thread::spawn(move || tracking::run(p, cal, use_imu_calibration));
     }
     { let (sh, p) = (shared.clone(), pose.clone()); let cal = calibration.clone(); std::thread::spawn(move || link_thread(sh, p, cal)); }
-    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), reproject, distortion, test_grid, dump_dir, dump_count, pose: pose_for_app };
+    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), move_attempts: 0, reproject, test_grid, dump_dir, dump_count, pose: pose_for_app };
     el.run_app(&mut app).expect("run");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moving_the_window_alternates_leaving_and_entering_fullscreen() {
+        assert!(leave_fullscreen_first(0));
+        assert!(!leave_fullscreen_first(1));
+        assert!(leave_fullscreen_first(2));
+    }
 }

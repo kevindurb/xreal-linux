@@ -28,57 +28,6 @@ pub fn fov() -> [f32; 4] {
     if bits[1] == 0 { DEFAULT_FOV } else { bits.map(f32::from_bits) }
 }
 
-/// The factory display-distortion grids: for each grid point, `step` panel pixels apart, where the glasses' optics put that panel pixel
-/// in the ideal (undistorted) picture, in panel pixels. Row-major, `cols` x `rows`, left eye then right eye.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DistortionGrids {
-    pub cols: usize,
-    pub rows: usize,
-    pub left: Vec<[f32; 2]>,
-    pub right: Vec<[f32; 2]>,
-}
-
-pub const PANEL: [f32; 2] = [1920.0, 1200.0];
-/// Rows of each eye's picture; assumed centred in the panel's rows (not measured), so panel y = picture y + (1200 - 1080) / 2.
-pub const PICTURE_ROWS: f32 = 1080.0;
-pub const GRID_STEP: f32 = 32.0;
-
-/// Where to sample the ideal picture for the output pixel at picture position `uv` (0..1, v down). The grid says panel pixel P is seen at
-/// grid(P), so the pixel at P shows the picture at grid(P); `inverse` uses 2P - grid(P) instead, in case the grid runs the other way.
-pub fn corrected_uv(grid: &[[f32; 2]], cols: usize, rows: usize, uv: [f32; 2], inverse: bool) -> [f32; 2] {
-    let crop = (PANEL[1] - PICTURE_ROWS) / 2.0;
-    let p = [uv[0] * PANEL[0], uv[1] * PICTURE_ROWS + crop];
-    let g = [(p[0] / GRID_STEP).clamp(0.0, (cols - 1) as f32), (p[1] / GRID_STEP).clamp(0.0, (rows - 1) as f32)];
-    let (x0, y0) = (g[0].floor() as usize, g[1].floor() as usize);
-    let (x1, y1) = ((x0 + 1).min(cols - 1), (y0 + 1).min(rows - 1));
-    let (fx, fy) = (g[0] - x0 as f32, g[1] - y0 as f32);
-    let at = |x: usize, y: usize| grid[y * cols + x];
-    let mut q = [0.0; 2];
-    for k in 0..2 {
-        let top = at(x0, y0)[k] * (1.0 - fx) + at(x1, y0)[k] * fx;
-        let bottom = at(x0, y1)[k] * (1.0 - fx) + at(x1, y1)[k] * fx;
-        q[k] = top * (1.0 - fy) + bottom * fy;
-    }
-    if inverse {
-        q = [2.0 * p[0] - q[0], 2.0 * p[1] - q[1]];
-    }
-    [q[0] / PANEL[0], (q[1] - crop) / PICTURE_ROWS]
-}
-
-static DISTORTION: std::sync::Mutex<Option<std::sync::Arc<DistortionGrids>>> = std::sync::Mutex::new(None);
-static DISTORTION_VERSION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Publish the factory grids (or None when the config has none) for the renderer to pick up.
-pub fn set_distortion(grids: Option<DistortionGrids>) {
-    *DISTORTION.lock().unwrap() = grids.map(std::sync::Arc::new);
-    DISTORTION_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// The current grids and a version that changes whenever they are replaced.
-pub fn distortion() -> (u32, Option<std::sync::Arc<DistortionGrids>>) {
-    (DISTORTION_VERSION.load(std::sync::atomic::Ordering::Relaxed), DISTORTION.lock().unwrap().clone())
-}
-
 pub fn conj(q: Quat) -> Quat {
     [q[0], -q[1], -q[2], -q[3]]
 }
@@ -125,6 +74,63 @@ pub fn source_uv(m: &[[f32; 3]; 3], uv: [f32; 2], fov: [f32; 4]) -> Option<[f32;
     let u = (px - l) / (r - l);
     let v = (py + t) / (-b + t);
     if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) { Some([u, v]) } else { None }
+}
+
+static EYE_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static EYE_ORIENTATIONS: std::sync::Mutex<Option<[Quat; 2]>> = std::sync::Mutex::new(None);
+
+/// 0: the eyes' images are drawn as SteamVR rendered them; 1: each is rotated by its display's factory orientation; 2: the same with the opposite sign convention.
+pub fn set_eye_rotation_mode(mode: u8) {
+    EYE_MODE.store(mode, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn eye_rotation_mode() -> u8 {
+    EYE_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The two displays' factory orientations (left, right) as Hamilton w, x, y, z in the IMU's frame, from the glasses' config.
+pub fn set_eye_orientations(q: Option<[Quat; 2]>) {
+    *EYE_ORIENTATIONS.lock().unwrap() = q;
+}
+
+pub fn mat_mul(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut m = [[0.0; 3]; 3];
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    m
+}
+
+/// Rotation taking a ray in each eye's own view frame into the frame both eyes share (OpenVR's x right, y up, -z forward), after taking out
+/// the rotation the two displays have in common, so the picture is split evenly between them. `q` are the display orientations in the IMU's
+/// frame (x right, y down, z forward), which is OpenVR's frame turned 180 degrees about x, so a rotation's y and z components change sign.
+/// `reversed` reads them with the opposite convention (rotation from the IMU into the display instead of from the display into the IMU).
+pub fn eye_matrices_from(q: [Quat; 2], reversed: bool) -> [[[f32; 3]; 3]; 2] {
+    let q = q.map(|e| if reversed { conj(e) } else { e });
+    let sign = if q[0].iter().zip(q[1].iter()).map(|(a, b)| a * b).sum::<f32>() < 0.0 { -1.0 } else { 1.0 };
+    let sum = [0, 1, 2, 3].map(|i| q[0][i] + sign * q[1][i]);
+    let norm = sum.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let mid = sum.map(|v| v / norm);
+    q.map(|e| {
+        let r = mul(conj(mid), e);
+        to_matrix([r[0], r[1], -r[2], -r[3]])
+    })
+}
+
+/// The per-eye rotations in force: identity unless an eye-rotation mode is set and the glasses' orientations are known.
+pub fn eye_matrices() -> [[[f32; 3]; 3]; 2] {
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    match (eye_rotation_mode(), *EYE_ORIENTATIONS.lock().unwrap()) {
+        (0, _) | (_, None) => [identity; 2],
+        (mode, Some(q)) => eye_matrices_from(q, mode == 2),
+    }
+}
+
+/// Push-constant rows for each eye: the head rotation since SteamVR rendered, then the eye's own display rotation.
+pub fn eye_rows(delta: &[[f32; 3]; 3]) -> [[f32; 12]; 2] {
+    eye_matrices().map(|e| push_rows(&mat_mul(delta, &e)))
 }
 
 /// Pack a rotation matrix as three vec4 rows for push constants.
@@ -181,44 +187,57 @@ mod tests {
         assert!(source_uv(&far, [0.5, 0.5], FOV).is_none(), "60 degrees is outside the rendered field of view");
     }
 
-    fn grid_with(cols: usize, rows: usize, f: impl Fn(f32, f32) -> [f32; 2]) -> Vec<[f32; 2]> {
-        (0..rows).flat_map(|r| (0..cols).map(move |c| (c, r))).map(|(c, r)| f(c as f32 * GRID_STEP, r as f32 * GRID_STEP)).collect()
+    // Orientations of the 2026-10-08 unit's two displays (Hamilton w, x, y, z in the IMU frame): the left is turned 0.84 degrees about y, the right about 0.03.
+    const LEFT: Quat = [0.999969, -0.0027659, 0.0073439, 0.0000929];
+    const RIGHT: Quat = [0.9999952, -0.0027523, -0.0002608, 0.0014253];
+
+    fn yaw_of(m: &[[f32; 3]; 3]) -> f32 {
+        // The straight-ahead ray (0, 0, -1) goes to minus the matrix's third column; yaw to the right is its x over its forward part.
+        (-m[0][2]).atan2(m[2][2])
     }
 
     #[test]
-    fn an_identity_grid_leaves_the_picture_position_alone() {
-        let g = grid_with(61, 39, |x, y| [x, y]);
-        for uv in [[0.0, 0.0], [0.3, 0.7], [1.0, 1.0], [0.5, 0.5]] {
-            for inverse in [false, true] {
-                let c = corrected_uv(&g, 61, 39, uv, inverse);
-                assert!((c[0] - uv[0]).abs() < 1e-5 && (c[1] - uv[1]).abs() < 1e-5, "{uv:?} -> {c:?}");
+    fn the_eyes_split_the_factory_yaw_difference_evenly_and_oppositely() {
+        let [l, r] = eye_matrices_from([LEFT, RIGHT], false);
+        let (yl, yr) = (yaw_of(&l).to_degrees(), yaw_of(&r).to_degrees());
+        assert!((yl + yr).abs() < 0.01, "not opposite: {yl} {yr}");
+        // 0.872 degrees apart in total, 0.436 each: the left display's centre ray points right of the shared forward, the right one's left of it.
+        assert!(yl > 0.43 && yl < 0.44 && yr < -0.43 && yr > -0.44, "{yl} {yr}");
+    }
+
+    #[test]
+    fn the_reversed_convention_flips_the_direction() {
+        let [l, _] = eye_matrices_from([LEFT, RIGHT], false);
+        let [lr, _] = eye_matrices_from([LEFT, RIGHT], true);
+        assert!((yaw_of(&l) + yaw_of(&lr)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn identical_displays_get_no_rotation() {
+        for m in eye_matrices_from([LEFT, LEFT], false) {
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!((m[i][j] - if i == j { 1.0 } else { 0.0 }).abs() < 1e-6);
+                }
             }
         }
     }
 
     #[test]
-    fn a_grid_displacement_is_applied_forward_and_reversed_for_inverse() {
-        // Every panel pixel is seen 20 px to the right and 10 px lower: the pixel shows the picture 20 px right and 10 px down of itself.
-        let g = grid_with(61, 39, |x, y| [x + 20.0, y + 10.0]);
-        let uv = [0.5, 0.5];
-        let fwd = corrected_uv(&g, 61, 39, uv, false);
-        assert!((fwd[0] - (0.5 + 20.0 / 1920.0)).abs() < 1e-5 && (fwd[1] - (0.5 + 10.0 / 1080.0)).abs() < 1e-5, "{fwd:?}");
-        let inv = corrected_uv(&g, 61, 39, uv, true);
-        assert!((inv[0] - (0.5 - 20.0 / 1920.0)).abs() < 1e-5 && (inv[1] - (0.5 - 10.0 / 1080.0)).abs() < 1e-5, "{inv:?}");
+    fn eye_rotation_changes_the_sampled_pixel_by_the_expected_amount() {
+        // A 0.436 degree turn at the focal length of the panel (2490 px) is 18.9 px; on the 1920 px picture whose half width is 0.3857 tangents that is about 0.0147 of the width.
+        let [l, _] = eye_matrices_from([LEFT, RIGHT], false);
+        let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let s = source_uv(&mat_mul(&id, &l), [0.5, 0.5], FOV).unwrap();
+        let shift_px = (s[0] - 0.5).abs() * 1920.0;
+        assert!((shift_px - 0.436f32.to_radians() * 2490.0).abs() < 1.5, "{shift_px}");
     }
 
     #[test]
-    fn the_picture_is_centred_in_the_panel_rows() {
-        // A grid that maps panel pixels to themselves except that it adds 60 rows: the picture's top row (panel row 60) lands on picture row 60.
-        let g = grid_with(61, 39, |x, y| [x, y + 60.0]);
-        let c = corrected_uv(&g, 61, 39, [0.5, 0.0], false);
-        assert!((c[1] - 60.0 / 1080.0).abs() < 1e-5, "{c:?}");
-    }
-
-    #[test]
-    fn lookups_interpolate_between_grid_points() {
-        let g = grid_with(61, 39, |x, y| [x + x / 32.0, y]); // displacement grows by 1 px per grid column
-        let a = corrected_uv(&g, 61, 39, [16.0 / 1920.0, 60.0 / 1080.0], false); // half a cell in: displacement 0.5 px
-        assert!((a[0] * 1920.0 - 16.5).abs() < 1e-3, "{a:?}");
+    fn a_pitch_difference_between_the_eyes_would_be_vertical_not_horizontal() {
+        let up = |deg: f32| { let h = deg.to_radians() / 2.0; [h.cos(), h.sin(), 0.0, 0.0] };
+        let [l, _] = eye_matrices_from([up(0.4), up(0.0)], false);
+        assert!(yaw_of(&l).abs() < 1e-4);
+        assert!((l[1][2]).abs() > 1e-3, "no vertical component");
     }
 }

@@ -6,7 +6,7 @@ grow into the process that imports SteamVR's per-eye textures from the driver an
 late-latching reprojection).
 
     xreal-presenter [--monitor NAME] [--reproject]      # default DP-1; Esc quits
-    options: --no-imu-calibration  --mag-yaw (experimental)  --set-sbs (sends one setter, see below)  --print-calibration (print and exit)
+    options: --no-set-sbs  --no-imu-calibration  --eye-rotation | --eye-rotation-reversed (experimental)  --test-grid  --print-calibration (print and exit)
 
 Left half = left eye (red tint), right half = right eye (blue tint). A green square slides across each half with a
 24 px offset between the eyes: in a working stereo mode it should appear to float in front of the frame. White borders
@@ -45,15 +45,17 @@ The presenter also keeps itself on the glasses' output: if the compositor drops 
 
 ## Control port (`src/glasses.rs`)
 
-The presenter connects to the glasses' control port (TCP 52999), reads the factory calibration (`NRGlassesGetConfig`, read-only), derives the field of view, IPD and IMU matrices, sends the field of view and IPD to the driver (message type 7) and logs the glasses' events. The reply is cached under `~/.cache/xreal-presenter/` (never in the repo; it contains the serial number). `--set-sbs` additionally reads the input mode and, if it is 0, sends `NRDpSetInputMode` = 1; test it only with the wearer's approval of those exact bytes. `--mag-yaw` is experimental: rotate the glasses slowly through many directions for about 30 s after start so the hard-iron fit settles.
+The presenter connects to the glasses' control port (TCP 52999), reads the factory calibration (`NRGlassesGetConfig`, read-only), derives the field of view, IPD, IMU matrices and display orientations, sends the field of view and IPD to the driver (message type 7) and logs the glasses' events; a quiet connection is kept, and it reconnects only when the connection really ends. The reply is cached under `~/.cache/xreal-presenter/` (never in the repo; it contains the serial number).
 
-## Factory display distortion and the test grid (`--factory-distortion`, `--test-grid`)
+**It sets full side-by-side itself:** it reads the input mode (`NRDpGetInputMode`) and, only if it is 0, sends `NRDpSetInputMode` = 1 (`28 22 00 00 00 08 80 00 00 03 1a 02 08 01`), at most once per connection and three times per run; a rejected or unanswered setter is logged and not retried. `--no-set-sbs` turns that off, and `--print-calibration` never sends it. Every test run on glasses you do not want switched needs `--no-set-sbs`. When the output changes mode the window is moved back onto it by leaving fullscreen and re-entering it.
 
-The glasses' config holds a 61 x 39 grid per eye (`display_distortion`): panel pixel (x, y), 32 pixels apart, to the position where its light is seen in the ideal picture (corners about 22-26 px outward, centre under 1 px). With `--factory-distortion` the warp shader moves each output pixel through that grid first, assuming each eye's 1080-row picture is centred in the panel's 1200 rows; `--factory-distortion-reversed` applies the opposite displacement. Both are off by default because the direction is not verified on hardware. `--test-grid` draws straight lines (120 picture pixels apart, a frame and a centre cross) through the same pass, with or without SteamVR, for judging the correction. Wearer check, on the glasses in full SBS: run `xreal-presenter --monitor DP-1 --test-grid` and note how the frame and lines bend near the edges, then `--test-grid --factory-distortion` and then `--test-grid --factory-distortion-reversed`. The right one shows straight lines everywhere in the picture; the others look worse (more curved) than no correction. With `--dump DIR` and `touch DIR/trigger` the centre crop can be captured without SteamVR.
+## Test grid (`--test-grid`)
 
-## Magnetometer calibration (`--mag-calibrate`, `--mag-report`, `--mag-yaw`)
+`xreal-presenter --monitor DP-1 --test-grid` draws straight lines every 120 picture pixels, a frame, a centre cross and, in the four corners, a ruler with a tick every 20 rows from the top and bottom edges, instead of the eye images (also without SteamVR). Use it to judge the visible area. On the tested unit, in full SBS: the lines looked straight, there were no black bars above and below, and the bottom border was hidden by the lens's curved edge. The factory display-distortion grid made it worse in both directions and its code was removed (see `docs/findings.md`).
 
-`xreal-presenter --mag-calibrate` (no SteamVR needed) prints one live line (samples, directions visited of 26, fitted centre, radius, per-axis scale, residual) while you turn the glasses slowly through every direction: look up, down, left, right, tilt each shoulder, a full turn each way. When coverage and residual pass it saves a per-unit calibration under `~/.cache/xreal-presenter/` and exits. `--mag-yaw` then uses it instead of learning. `xreal-presenter --mag-report` holds still for 60 s (glasses on a table) and prints the yaw drift with and without the correction. Not validated on real data; the glasses' field at rest was 81 uT in one session against 50 uT earlier, so recalibrate when the surroundings change.
+## Per-eye display rotation (`--eye-rotation`, experimental)
+
+The config gives each display's orientation relative to the IMU. On the tested unit they differ by 0.885 degrees, almost all of it about the vertical axis (0.87 degrees, about 38 px at the panel's focal length of 2490 px): with parallel eye cameras, as SteamVR renders them, infinity would be seen at about 4.2 m. `--eye-rotation` rotates each eye's sampling rays by its display's orientation relative to the pair's mean (about 19 px per eye, opposite ways), in the warp pass (also without `--reproject`). The sign convention of the factory quaternions is not verified; `--eye-rotation-reversed` applies the opposite one. Wearer check: in SteamVR Home look at something far away (the sky, the far wall) for a minute with each flag and without; the correct sign makes distant things feel farther away and the reversed one makes the picture strain to fuse. Stop at once if it hurts. The shift opens a strip of about 19 px of black at one edge of each eye's picture.
 
 ## Display-mode log
 

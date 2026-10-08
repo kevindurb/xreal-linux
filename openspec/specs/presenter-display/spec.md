@@ -7,7 +7,7 @@ Show SteamVR's frames on the glasses. The presenter owns the glasses' display, i
 
 ### Requirement: Fullscreen on the glasses' output
 
-The presenter SHALL run fullscreen on the glasses' output (default `DP-1`, selectable with `--monitor`) and SHALL put its window back on that output within about half a second if the compositor places it elsewhere, for example after the glasses re-plug.
+The presenter SHALL run fullscreen on the glasses' output (default `DP-1`, selectable with `--monitor`) and SHALL put its window back on that output within about a second if the compositor places it elsewhere, for example after the glasses re-plug or change mode, by leaving fullscreen and re-entering it on alternate attempts (asking for the same fullscreen output again did not move it).
 
 #### Scenario: Glasses re-plug after a mode change
 
@@ -133,19 +133,28 @@ With `--reproject` the presenter SHALL show, on every refresh, the newest SteamV
 - **WHEN** the presenter runs with `--reproject --sim-pose --sim-yaw 40` and `--dump` captures 480 refreshes
 - **THEN** `tools/judder_report.py` reports fewer double shifts than the same capture without `--reproject`
 
-### Requirement: Optional factory display-distortion correction
+### Requirement: Test grid
 
-The presenter SHALL, only when started with `--factory-distortion` (or `--factory-distortion-reversed`), move each output pixel through the glasses' factory display-distortion grid for that eye (61 x 39 points, 32 panel pixels apart) before reprojecting, assuming each eye's 1080-row picture is centred in the panel's 1200 rows. Without the flag, and while the grid has not arrived, it SHALL draw without the correction. `--test-grid` SHALL draw a straight-line grid (120 picture pixels apart, with a frame and centre cross) through the same pass instead of the eye images, also when SteamVR is not connected, so the correction can be judged without SteamVR. The direction of the grid is not verified on hardware; `--factory-distortion-reversed` applies the opposite displacement to compare.
+The presenter SHALL, only when started with `--test-grid`, draw a straight-line grid (lines 120 picture pixels apart, a frame, a centre cross, and in the four corners a ruler with a tick every 20 rows measured from the top and bottom edges) instead of the eye images, also when SteamVR is not connected, so the glasses' visible area can be judged without SteamVR.
 
-#### Scenario: Grid on, test pattern
+#### Scenario: Counting visible rows
 
-- **WHEN** the presenter runs with `--test-grid --factory-distortion` and the control port has delivered the grids
-- **THEN** it logs that the grid was loaded and draws the test grid with the frame's straight edges bent by the factory displacement (up to about 25 px at the corners)
+- **WHEN** the presenter runs with `--test-grid` on glasses in full SBS
+- **THEN** each eye shows the grid, and the wearer can count how many corner ticks at the top and bottom edges are visible
 
-#### Scenario: Grid off
+### Requirement: Optional per-eye display rotation
 
-- **WHEN** neither distortion flag is given
-- **THEN** pixels are not moved: an identity grid and no grid draw the same picture
+The presenter SHALL, only when started with `--eye-rotation` (or `--eye-rotation-reversed`), rotate each eye's sampling rays by that display's factory orientation relative to the other display, split evenly between the eyes, in the same pass as reprojection (identity head rotation when `--reproject` is off). Without the flag the eye images are drawn as SteamVR rendered them. The sign convention of the factory quaternions is not verified on hardware; `--eye-rotation-reversed` reads them the other way for comparison.
+
+#### Scenario: Factory orientations of the tested unit
+
+- **WHEN** `--eye-rotation` is set and the left display is turned 0.84 degrees about the vertical axis and the right display 0.03 degrees the other way
+- **THEN** the two eyes' images are shifted by about 0.44 degrees (about 19 px at the panel's focal length) in opposite directions
+
+#### Scenario: Flag absent
+
+- **WHEN** neither flag is given
+- **THEN** the rotation matrices are the identity and nothing moves
 
 ### Requirement: Log display-mode changes with the control events
 

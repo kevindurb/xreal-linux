@@ -32,7 +32,7 @@ Deploy and run (every ssh prints a harmless `mise: command not found`; filter wi
     # on the Deck (export XDG_RUNTIME_DIR=/run/user/1000 first):
     cd ~/xreal-linux/driver && /usr/bin/podman run --rm -v "$PWD":/src:Z -w /src registry.fedoraproject.org/fedora:44 bash -c "dnf -y -q install gcc-c++ libstdc++-static binutils git >/dev/null 2>&1 && ./build.sh"
     cd ~/xreal-linux/presenter && /usr/bin/podman run --rm -v "$PWD":/src:Z -v xreal-cargo-cache:/root/.cargo:Z -w /src registry.fedoraproject.org/fedora:44 bash -c "dnf -y -q install rust cargo gcc >/dev/null 2>&1 && cargo build --release --target-dir /src/target-new" && cp target-new/release/xreal-presenter target/release/xreal-presenter
-    ~/xreal-linux/tools/vr_session.sh start | stop | presenter | status | log     # start refuses unless the glasses are in full SBS (a single 3840x1080 mode)
+    ~/xreal-linux/tools/vr_session.sh start | stop | presenter | status | log     # start has the presenter set full SBS and waits for the single 3840x1080 mode before launching SteamVR
 
 On the Mac, tests: `python3 tools/test_xreal_link.py`; presenter `cargo test` and the driver build run in containers (`docker.io/library/rust:1`, `registry.fedoraproject.org/fedora:44`) through `podman`.
 **Do not delete `presenter/Cargo.lock`** (it is tracked).
@@ -96,16 +96,18 @@ Allowlisted today: getters 10003, 10005, 10008, 10013, 10015, 10016, 10025, 1002
 
 **6DoF and the camera are parked (decided by the user 2026-10-08).** A host-started camera gives one 4-frame burst per replug in every variant tried, and the `InitSet*` values are not in ControlGlasses 3.1.0 or Nebula 3.8.1 (task 0.5 in `openspec/changes/add-6dof-camera-tracking`). Resume only if the values or a capture of an official app starting the camera turn up. The work is the 3DoF tier and the glasses' own configuration.
 
-What exists (committed and pushed; presenter tests 37, python 28):
+What exists (presenter tests 30, python 28; what is marked built 2026-10-08 below is uncommitted until the user decides):
 - The presenter reads `GetConfig` on every control-port connection (`presenter/src/glasses.rs`), caches it under `~/.cache/xreal-presenter/` (hashed file names, never the serial), sends the display-derived field of view and IPD to the driver (message type 7; the driver waits about 2 s for it in `Activate`), applies the factory gyro/accel matrices (`--no-imu-calibration` turns it off; the factory gyro bias is NOT used, see `docs/findings.md`) and logs the glasses' events as `[control +T s] event ID ...` and connector mode changes as `[display +T s] modes: ...`. A VR session with these builds ran at 60 fps and the wearer said everything looked right (about 4 minutes).
-- **`--set-sbs` works on hardware** (2026-10-08): with the glasses in 2D it sent `28 22 00 00 00 08 80 00 00 03 1a 02 08 01`, the glasses replied `22 00` and the mode became a single 3840x1080. Still opt-in; `tools/vr_session.sh start` still refuses unless the glasses are already in SBS.
-- **Negative results, flags kept off:** `--factory-distortion` and `--factory-distortion-reversed` both made the test grid worse than the plain one (which looked straight), so the display-distortion grid is not used. `--mag-calibrate` did not converge (the fitted centre kept moving, residual 11-18 %), and the glasses hold no stored mag calibration (10018 answered empty), so `--mag-yaw` stays experimental. Details in `docs/findings.md`.
+- **Full SBS is now automatic** (built 2026-10-08, **the first real run of the automatic path is not done**): the setter `NRDpSetInputMode` = 1 worked on hardware earlier (`28 22 00 00 00 08 80 00 00 03 1a 02 08 01`, reply `22 00`, mode became a single 3840x1080). The presenter now sends it by default, only when the getter reads 0, once per connection and at most three times per run (`--no-set-sbs` turns it off, `--print-calibration` never sends it). **Every Deck test run on glasses that must not be switched needs `--no-set-sbs`.** `tools/vr_session.sh start` launches the presenter first, waits up to 15 s for the single 3840x1080 mode, and only then starts SteamVR (exits non-zero otherwise). The presenter also moves its window onto the glasses after a mode change by leaving and re-entering fullscreen on alternate attempts (before, it stayed on the Deck's screen when the glasses were in 2D at start; the fix is only unit-tested). The control reader keeps a quiet connection (TCP keepalive notices a dead one).
+- **Negative results, code removed** (recoverable at commit `33d4419`): the factory display-distortion grid made the test grid worse in both directions, and the magnetometer calibration did not converge; see `docs/findings.md`. `--test-grid` and its edge ruler stay.
+- **Experimental, not worn yet:** `--eye-rotation` / `--eye-rotation-reversed` rotate each eye's rays by the display's factory orientation relative to the pair (0.885 degrees apart, about 19 px per eye; arithmetic in `docs/findings.md`). The sign convention is unverified; see `presenter/README.md` for the wearer check.
 - `tools/analyze_control_events.py` lists the glasses' events before each drop to 2D. No drop has been caught yet (one 4-minute session, none).
 
 Open:
+0. **First automatic SBS run:** with the glasses in the regular mode and no VR session running, approve the setter bytes above, then `tools/vr_session.sh start`; check that SteamVR starts after the mode changes and that the presenter's window is on the glasses without a restart.
 1. **The 2D drop-outs:** needs a long session. `tools/vr_session.sh start`, leave it running (worn or on the desk), then on the Deck `python3 ~/xreal-linux/tools/analyze_control_events.py /tmp/presenter.log`. `NRProximitySetEnable` (10009) only with approval.
 2. **Vertical field of view:** the 0.2190 half tangent still assumes a 1080-row picture centred in 1200 rows; the wearer sees no black bars, and the bottom border is hidden by the lens edge. Not settled, no known fix.
-3. The event reader reconnects after 30 s of silence (harmless but noisy); it should just keep waiting.
+3. `--eye-rotation` needs the wearer check described in `presenter/README.md`.
 4. The other proposed changes, `add-installable-package` (needs a discussion of what the package is and contains) and `support-other-gpus`, have not been started.
 
 ## 8. Status of the OpenSpec changes
@@ -119,6 +121,6 @@ Open:
 
 ## 9. State of the machines at the end of this session
 
-- Glasses: full SBS (set by the host with `--set-sbs`), Follow mode, Stabilizer off; the camera Start was used since the last replug.
-- Deck: no VR session and no presenter, `xreal-session` or `xreal-magcal` unit running. The latest presenter and driver are installed. Waydroid stopped and reverted; `adb` removed.
+- Glasses: full SBS (set by the host earlier), Follow mode, Stabilizer off; the camera Start was used since the last replug.
+- Deck: no VR session and no presenter, `xreal-session` unit running. The latest presenter and driver are installed. Waydroid stopped and reverted; `adb` removed.
 - Repo: everything committed and pushed to `main`.

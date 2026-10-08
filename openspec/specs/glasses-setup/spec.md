@@ -9,10 +9,15 @@ The conditions the glasses, SteamVR and the desktop must satisfy for the headset
 
 The glasses SHALL be in full side-by-side mode, which presents a single 3840x1080 mode on their DisplayPort output. Their other modes (16:9, 16:10, ultrawide, half SBS) do not give each eye its own image.
 
-#### Scenario: Wrong mode
+#### Scenario: Regular mode at start
 
-- **WHEN** `tools/vr_session.sh start` is run and the glasses' output offers anything other than the single 3840x1080 mode
-- **THEN** it refuses to start and says the glasses must be switched to full SBS
+- **WHEN** `tools/vr_session.sh start` is run and the glasses are in the regular mode (their output offers more than the single 3840x1080 mode)
+- **THEN** the presenter sets full SBS once, SteamVR is started only after the output offers the single 3840x1080 mode, and the presenter's window moves to the glasses without a restart
+
+#### Scenario: SBS is not reached
+
+- **WHEN** the output does not become the single 3840x1080 mode within about 15 s (for example with `--no-set-sbs` in `XREAL_EXTRA_ARGS`, or the setter was rejected)
+- **THEN** the script says so, prints the relevant presenter log lines, does not start SteamVR, stops the presenter and exits non-zero
 
 ### Requirement: Glasses menu settings that cannot be detected
 
@@ -43,7 +48,7 @@ At least one display other than the glasses SHALL be enabled so Steam and SteamV
 
 ### Requirement: Session control
 
-`tools/vr_session.sh` SHALL start and stop the presenter and SteamVR together, restart only the presenter on request, report status, and pass options through (`XREAL_REPROJECT`, `XREAL_EXTRA_ARGS`). The presenter SHALL run with `--reproject` unless `XREAL_REPROJECT=0`, because reprojection is what hides SteamVR's missed frames.
+`tools/vr_session.sh` SHALL start and stop the presenter and SteamVR together, restart only the presenter on request, report status, and pass options through (`XREAL_REPROJECT`, `XREAL_EXTRA_ARGS`, for example `--no-set-sbs`). The presenter SHALL run with `--reproject` unless `XREAL_REPROJECT=0`, because reprojection is what hides SteamVR's missed frames.
 
 #### Scenario: Start with defaults
 
@@ -85,17 +90,41 @@ The setup guidance SHALL recommend running SteamVR without Home (`steamvr.enable
 
 ### Requirement: Presenter reads the glasses' calibration and events over the control port
 
-The presenter SHALL, on connecting to the control port (TCP 52999), send only the read-only `NRGlassesGetConfig` request (and `NRDpGetInputMode` with `--set-sbs`), derive the per-eye field of view, IPD and IMU matrices from the reply, send the field of view and IPD to the driver, cache the reply per unit outside the repository under a file name that does not contain the serial number, use the newest cache when the control port is unreachable, and log the glasses' events with timestamps (temperature events at most once a minute). It SHALL send `NRDpSetInputMode` = 1 (`28 22 00 00 00 08 80 00 00 03 1a 02 08 01`) only with `--set-sbs`, and only when the input mode getter reports 0.
+The presenter SHALL, on connecting to the control port (TCP 52999), send the read-only `NRGlassesGetConfig` and `NRDpGetInputMode` requests, derive the per-eye field of view, IPD, IMU matrices and display orientations from the config reply, send the field of view and IPD to the driver, cache the reply per unit outside the repository under a file name that does not contain the serial number, use the newest cache when the control port is unreachable, and log the glasses' events with timestamps (temperature events at most once a minute). It SHALL treat a quiet connection as normal and reconnect only when the connection is closed or fails (a dead peer is detected by TCP keepalive).
 
-#### Scenario: Glasses in regular mode, `--set-sbs`
+#### Scenario: Quiet control port
 
-- **WHEN** the getter returns value 0
-- **THEN** the presenter sends the setter once and logs the reply
+- **WHEN** no event arrives for longer than 30 s
+- **THEN** the presenter keeps the same connection and logs nothing
 
-#### Scenario: Glasses already in side by side, or no `--set-sbs`
+#### Scenario: Connection closed
 
-- **WHEN** the getter returns 1, or the flag is absent
+- **WHEN** the glasses close the connection or it fails
+- **THEN** the presenter logs it and reconnects, reading the config again
+
+### Requirement: The presenter sets full side-by-side itself
+
+The presenter SHALL, unless started with `--no-set-sbs`, send `NRDpSetInputMode` = 1 (`28 22 00 00 00 08 80 00 00 03 1a 02 08 01`) only when the input mode getter reports 0, at most once per control connection and at most three times per run, log each send and the result, and never retry a rejected or unanswered setter. `--print-calibration` SHALL NOT send it.
+
+#### Scenario: Glasses in regular mode at start
+
+- **WHEN** the getter returns 0 on a new connection
+- **THEN** the presenter sends the setter once, logs `accepted` on reply status 0, and the output becomes the single 3840x1080 mode
+
+#### Scenario: Glasses already in side by side
+
+- **WHEN** the getter returns 1, or `--no-set-sbs` is given
 - **THEN** no setter is sent
+
+#### Scenario: Setter rejected
+
+- **WHEN** the setter reply carries a non-zero status
+- **THEN** the presenter logs the status and does not retry on that connection
+
+#### Scenario: Glasses that keep reverting
+
+- **WHEN** the glasses fall back to the regular mode on each of several connections
+- **THEN** the setter is sent for the first three connections only, and later connections log that the limit is reached
 
 ### Requirement: Analyse why the glasses drop to 2D
 

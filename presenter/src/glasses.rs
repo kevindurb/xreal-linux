@@ -1,7 +1,7 @@
 //! The glasses' control port (TCP 52999): read the factory calibration, log the glasses' own events, and optionally set full
-//! side-by-side. Framing and ids are in docs/xreal-link-messages.md section 13. Only the read-only getters 10015 (config) and 10273
-//! (input mode) are sent by default; the one setter, 10274, is sent only with `--set-sbs` and only when the getter says the glasses
-//! are in the regular mode.
+//! side-by-side. Framing and ids are in docs/xreal-link-messages.md section 13. The read-only getters 10015 (config) and 10273
+//! (input mode) are always sent; the one setter, 10274, only when the getter says the glasses are in the regular mode, at most once
+//! per connection and `MAX_SBS_SETS` times per run, and never with `--no-set-sbs`.
 
 use serde_json::Value;
 use std::io::{Read, Write};
@@ -18,6 +18,8 @@ const TX_TOP_BIT: u32 = 0x8000_0000;
 const GETTER_BODY: [u8; 2] = [0x18, 0x00];
 const SBS_BODY: [u8; 4] = [0x1a, 0x02, 0x08, 0x01];
 const HOSTS: [&str; 2] = ["169.254.2.1:52999", "169.254.1.1:52999"];
+/// Bounds the setter for glasses that keep reverting to the regular mode.
+const MAX_SBS_SETS: u32 = 3;
 
 /// What the presenter takes from the glasses' factory calibration.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,9 +30,8 @@ pub struct Calibration {
     /// Row-major 3x3 matrices applied to the raw gyro and accelerometer vectors.
     pub gyro_matrix: [f64; 9],
     pub accel_matrix: [f64; 9],
-    pub distortion: Option<crate::warp::DistortionGrids>,
-    /// A hash of the unit's serial number, to name per-unit files with; the serial itself is not kept.
-    pub unit_id: u64,
+    /// The two displays' orientations (left, right), Hamilton w, x, y, z, in the IMU's frame.
+    pub eye_orientations: Option<[[f32; 4]; 2]>,
 }
 
 pub type SharedCalibration = Arc<Mutex<Option<Calibration>>>;
@@ -151,27 +152,6 @@ fn numbers(v: &Value, n: usize) -> Option<Vec<f64>> {
     (a.len() == n).then_some(a)
 }
 
-/// The factory display-distortion grids, or None if the config has none or they are not the expected 32-pixel grid.
-fn parse_distortion(v: &Value) -> Option<crate::warp::DistortionGrids> {
-    let side = |key: &str| -> Option<(usize, usize, Vec<[f32; 2]>)> {
-        let g = &v["display_distortion"][key];
-        let (cols, rows) = (g["num_col"].as_u64()? as usize, g["num_row"].as_u64()? as usize);
-        let data = numbers(&g["data"], cols * rows * 4)?;
-        let step = crate::warp::GRID_STEP as f64;
-        let mut out = Vec::with_capacity(cols * rows);
-        for (i, p) in data.chunks_exact(4).enumerate() {
-            if (p[0] - (i % cols) as f64 * step).abs() > 0.5 || (p[1] - (i / cols) as f64 * step).abs() > 0.5 {
-                return None;
-            }
-            out.push([p[2] as f32, p[3] as f32]);
-        }
-        Some((cols, rows, out))
-    };
-    let (cols, rows, left) = side("left_display")?;
-    let (c2, r2, right) = side("right_display")?;
-    (cols == c2 && rows == r2 && cols >= 2 && rows >= 2).then_some(crate::warp::DistortionGrids { cols, rows, left, right })
-}
-
 /// Field of view and IPD from the display intrinsics, assuming the 1080-row side-by-side picture sits unscaled and centred in the
 /// panel's 1200 rows (not measured), and the IMU matrices. The serial number is not read here.
 pub fn parse_calibration(json: &str) -> Result<Calibration, String> {
@@ -192,15 +172,17 @@ pub fn parse_calibration(json: &str) -> Result<Calibration, String> {
     let t = (v_sum / 4.0) as f32;
     let xl = numbers(&d["target_p_left_display"], 3).ok_or("target_p_left_display missing")?[0];
     let xr = numbers(&d["target_p_right_display"], 3).ok_or("target_p_right_display missing")?[0];
+    let orientation = |key: &str| numbers(&d[key], 4).map(|q| [q[3] as f32, q[0] as f32, q[1] as f32, q[2] as f32]);
+    let eye_orientations = orientation("target_q_left_display").zip(orientation("target_q_right_display")).map(|(l, r)| [l, r]);
     let imu = &v["IMU"]["device_1"]["imu_intrinsics"];
     let m = |key: &str| -> Result<[f64; 9], String> {
         let a = numbers(&imu[key], 9).ok_or(format!("IMU intrinsics {key} missing"))?;
         Ok(a.try_into().unwrap())
     };
-    Ok(Calibration { fov: [-h, h, -t, t], ipd_m: (xr - xl).abs() as f32, gyro_matrix: m("gyro_calib_mat")?, accel_matrix: m("accl_calib_mat")?, distortion: parse_distortion(&v), unit_id: fnv1a(v["FSN"].as_str().unwrap_or("")) })
+    Ok(Calibration { fov: [-h, h, -t, t], ipd_m: (xr - xl).abs() as f32, gyro_matrix: m("gyro_calib_mat")?, accel_matrix: m("accl_calib_mat")?, eye_orientations })
 }
 
-pub(crate) fn cache_dir() -> Option<PathBuf> {
+fn cache_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".cache").join("xreal-presenter"))
 }
@@ -233,7 +215,60 @@ struct Conn {
     last_temperature_log: Option<Instant>,
 }
 
+/// What waiting for the next frame produced: a quiet line is normal, only a closed or failed one ends the connection.
+#[derive(Debug, PartialEq)]
+enum Next {
+    Frame(u16, Vec<u8>),
+    Quiet,
+    Closed,
+}
+
+/// What to do about the input mode after reading it.
+#[derive(Debug, PartialEq)]
+enum SbsPlan {
+    Send,
+    AlreadySet(u64),
+    Skip(&'static str),
+}
+
+/// The setter goes out only for the regular mode (0), once per connection, and never more than `MAX_SBS_SETS` times in a run.
+fn plan_sbs(mode: Option<u64>, sent_on_this_connection: bool, sent_in_run: u32) -> SbsPlan {
+    match mode {
+        None => SbsPlan::Skip("no usable input mode reply"),
+        Some(0) if sent_on_this_connection => SbsPlan::Skip("already sent on this connection"),
+        Some(0) if sent_in_run >= MAX_SBS_SETS => SbsPlan::Skip("the setter limit for this run is reached"),
+        Some(0) => SbsPlan::Send,
+        Some(v) => SbsPlan::AlreadySet(v),
+    }
+}
+
+/// The result code of a setter reply (field 1 of the nested message); 0 is success, and protobuf omits it when 0.
+fn reply_status(body: &[u8]) -> Option<u64> {
+    let nested = bytes_field(body, 4)?;
+    let mut i = 0;
+    while i < nested.len() {
+        let tag = read_varint(nested, &mut i)?;
+        if tag & 7 != 0 {
+            return None;
+        }
+        let v = read_varint(nested, &mut i)?;
+        if tag >> 3 == 1 {
+            return Some(v);
+        }
+    }
+    Some(0)
+}
+
 impl Conn {
+    /// A dead peer (the glasses unplugged) is noticed by keepalive probes instead of by the read timeout.
+    fn enable_keepalive(&self) {
+        use std::os::fd::AsRawFd;
+        let fd = self.stream.as_raw_fd();
+        for (level, name, value) in [(libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1), (libc::IPPROTO_TCP, libc::TCP_KEEPIDLE, 10), (libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, 5), (libc::IPPROTO_TCP, libc::TCP_KEEPCNT, 3)] {
+            unsafe { libc::setsockopt(fd, level, name, &value as *const i32 as *const _, std::mem::size_of::<i32>() as u32) };
+        }
+    }
+
     fn log_event(&mut self, id: u16, payload: &[u8]) {
         if id == TEMPERATURE_EVENT {
             if self.last_temperature_log.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
@@ -245,8 +280,8 @@ impl Conn {
         println!("[control +{:.1}s] event {id} ({} bytes) {head}", uptime_s(), payload.len());
     }
 
-    /// The next whole frame as (msg_id, payload after the 6-byte header), or None on timeout or a closed connection.
-    fn read_frame(&mut self, timeout: Duration) -> Option<(u16, Vec<u8>)> {
+    /// The next whole frame (msg_id, payload after the 6-byte header), `Quiet` if none arrived within `timeout`, `Closed` if the connection ended.
+    fn read_frame(&mut self, timeout: Duration) -> Next {
         let deadline = Instant::now() + timeout;
         loop {
             if self.buf.len() >= 6 {
@@ -254,23 +289,22 @@ impl Conn {
                 let len = u32::from_be_bytes(self.buf[2..6].try_into().unwrap()) as usize;
                 if len > 4 << 20 {
                     self.buf.clear();
-                    return None;
+                    return Next::Closed;
                 }
                 if self.buf.len() >= 6 + len {
                     let payload = self.buf[6..6 + len].to_vec();
                     self.buf.drain(..6 + len);
-                    return Some((id, payload));
+                    return Next::Frame(id, payload);
                 }
             }
-            let left = deadline.checked_duration_since(Instant::now())?;
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else { return Next::Quiet };
             let _ = self.stream.set_read_timeout(Some(left.max(Duration::from_millis(1))));
             let mut chunk = [0u8; 16384];
             match self.stream.read(&mut chunk) {
-                Ok(0) | Err(_) if Instant::now() >= deadline => return None,
-                Ok(0) => return None,
+                Ok(0) => return Next::Closed,
                 Ok(n) => self.buf.extend_from_slice(&chunk[..n]),
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(_) => return None,
+                Err(_) => return Next::Closed,
             }
         }
     }
@@ -280,12 +314,39 @@ impl Conn {
         self.stream.write_all(&build_request(id, txid, body)).ok()?;
         let deadline = Instant::now() + timeout;
         loop {
-            let (rid, payload) = self.read_frame(deadline.checked_duration_since(Instant::now())?)?;
+            let Next::Frame(rid, payload) = self.read_frame(deadline.checked_duration_since(Instant::now())?) else { return None };
             let is_reply = rid == id && payload.len() >= 4 && u32::from_be_bytes(payload[..4].try_into().unwrap()) == txid;
             if is_reply {
                 return Some(payload[4..].to_vec());
             }
             self.log_event(rid, &payload);
+        }
+    }
+
+    /// Read the input mode and, only if the plan says so, set full side-by-side once. Returns whether the setter was sent.
+    fn ensure_sbs(&mut self, sent_in_run: u32) -> bool {
+        let mode = self.request(GET_INPUT_MODE, 2, &GETTER_BODY, Duration::from_secs(5)).as_deref().and_then(reply_value);
+        match plan_sbs(mode, false, sent_in_run) {
+            SbsPlan::Send => {
+                println!("[control +{:.1}s] input mode is regular; sending NRDpSetInputMode = side by side ({} of at most {} this run)", uptime_s(), sent_in_run + 1, MAX_SBS_SETS);
+                match self.request(SET_INPUT_MODE, 3, &SBS_BODY, Duration::from_secs(5)).as_deref() {
+                    Some(reply) => match reply_status(reply) {
+                        Some(0) => println!("[control +{:.1}s] NRDpSetInputMode accepted", uptime_s()),
+                        Some(code) => eprintln!("[control +{:.1}s] NRDpSetInputMode rejected with status {code}; not retrying", uptime_s()),
+                        None => eprintln!("[control +{:.1}s] NRDpSetInputMode reply not understood; not retrying", uptime_s()),
+                    },
+                    None => eprintln!("[control +{:.1}s] no reply to NRDpSetInputMode; not retrying", uptime_s()),
+                }
+                true
+            }
+            SbsPlan::AlreadySet(v) => {
+                println!("[control +{:.1}s] input mode is already {v}; not sending the setter", uptime_s());
+                false
+            }
+            SbsPlan::Skip(why) => {
+                eprintln!("[control +{:.1}s] not sending the setter: {why}", uptime_s());
+                false
+            }
         }
     }
 }
@@ -295,20 +356,19 @@ fn publish(shared: &SharedCalibration, json: &str, source: &str) {
         Ok(c) => {
             println!("calibration from {source}: fov half tangents {:.4} x {:.4}, ipd {:.1} mm", c.fov[1], c.fov[3], c.ipd_m * 1000.0);
             crate::warp::set_fov(c.fov);
-            crate::warp::set_distortion(c.distortion.clone());
-            if c.distortion.is_none() { eprintln!("the config has no usable display distortion grid"); }
+            crate::warp::set_eye_orientations(c.eye_orientations);
             *shared.lock().unwrap() = Some(c);
         }
         Err(e) => eprintln!("calibration from {source} unusable: {e}"),
     }
 }
 
-/// Read the config once per connection, set full SBS if asked, then log the glasses' events until the connection drops; reconnect forever.
+/// Read the config once per connection, set full SBS if asked, then log the glasses' events until the connection really ends; reconnect forever.
 pub fn run(shared: SharedCalibration, set_sbs: bool) {
     if let Some(json) = load_cache() {
         publish(&shared, &json, "cache");
     }
-    let mut which = 0;
+    let (mut which, mut sbs_sent) = (0, 0u32);
     loop {
         let addr = HOSTS[which % HOSTS.len()];
         which += 1;
@@ -317,6 +377,7 @@ pub fn run(shared: SharedCalibration, set_sbs: bool) {
             continue;
         };
         let mut c = Conn { stream, buf: Vec::new(), last_temperature_log: None };
+        c.enable_keepalive();
         println!("[control +{:.1}s] connected to {addr}", uptime_s());
         match c.request(GET_CONFIG, 1, &GETTER_BODY, Duration::from_secs(8)).as_deref().and_then(reply_config_json) {
             Some(json) => {
@@ -325,21 +386,17 @@ pub fn run(shared: SharedCalibration, set_sbs: bool) {
             }
             None => eprintln!("no usable GetConfig reply"),
         }
-        if set_sbs {
-            match c.request(GET_INPUT_MODE, 2, &GETTER_BODY, Duration::from_secs(5)).as_deref().and_then(reply_value) {
-                Some(0) => {
-                    println!("input mode is regular; sending NRDpSetInputMode = side by side");
-                    let reply = c.request(SET_INPUT_MODE, 3, &SBS_BODY, Duration::from_secs(5));
-                    println!("NRDpSetInputMode reply: {:?}", reply.as_deref().map(|b| b.iter().map(|x| format!("{x:02x}")).collect::<String>()));
-                }
-                Some(v) => println!("input mode is already {v}; not sending the setter"),
-                None => eprintln!("no usable NRDpGetInputMode reply; not sending the setter"),
+        if set_sbs && c.ensure_sbs(sbs_sent) {
+            sbs_sent += 1;
+        }
+        loop {
+            match c.read_frame(Duration::from_secs(30)) {
+                Next::Frame(id, payload) => c.log_event(id, &payload),
+                Next::Quiet => {}
+                Next::Closed => break,
             }
         }
-        while let Some((id, payload)) = c.read_frame(Duration::from_secs(30)) {
-            c.log_event(id, &payload);
-        }
-        println!("[control +{:.1}s] closed or silent for 30 s", uptime_s());
+        println!("[control +{:.1}s] connection closed", uptime_s());
         std::thread::sleep(Duration::from_millis(1000));
     }
 }
@@ -356,7 +413,9 @@ mod tests {
                 "k_left_display": [2490.3648940102466, 0, 962.0111858309965, 0, 2470.537608760116, 605.3586852624517, 0, 0, 1],
                 "k_right_display": [2488.027738860976, 0, 961.2344180191407, 0, 2460.0983343970383, 604.6005837110847, 0, 0, 1],
                 "target_p_left_display": [-0.05674006253578419, 0.021724029363008816, -0.025956102625676013],
-                "target_p_right_display": [0.007232850140664456, 0.02183653092211818, -0.02656951674632919]
+                "target_p_right_display": [0.007232850140664456, 0.02183653092211818, -0.02656951674632919],
+                "target_q_left_display": [-0.0027658853160565026, 0.00734393654157105, 9.288422001839559e-05, 0.999969203449293],
+                "target_q_right_display": [-0.002752314081589499, -0.00026082712728034966, 0.0014252580421451003, 0.9999951626762598]
             },
             "IMU": {"device_1": {"imu_intrinsics": {
                 "gyro_calib_mat": [1.0058, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.006],
@@ -375,28 +434,9 @@ mod tests {
         assert_eq!(c.fov[2], -c.fov[3]);
         assert!((c.ipd_m - 0.064).abs() < 1e-4);
         assert_eq!(c.gyro_matrix[8], 1.006);
-    }
-
-    fn grid_json(cols: usize, rows: usize, shift: f64) -> serde_json::Value {
-        let data: Vec<f64> = (0..rows).flat_map(|r| (0..cols).flat_map(move |c| [c as f64 * 32.0, r as f64 * 32.0, c as f64 * 32.0 + shift, r as f64 * 32.0 - shift])).collect();
-        serde_json::json!({"num_col": cols, "num_row": rows, "type": 1, "data": data})
-    }
-
-    #[test]
-    fn distortion_grids_are_read_per_eye() {
-        let v = serde_json::json!({"display_distortion": {"left_display": grid_json(4, 3, 2.0), "right_display": grid_json(4, 3, -3.0)}});
-        let g = parse_distortion(&v).unwrap();
-        assert_eq!((g.cols, g.rows), (4, 3));
-        assert_eq!(g.left[1], [34.0, -2.0]);
-        assert_eq!(g.right[5], [32.0 - 3.0, 32.0 + 3.0]);
-    }
-
-    #[test]
-    fn a_grid_with_other_spacing_or_missing_data_is_not_used() {
-        let mut bad = grid_json(4, 3, 0.0);
-        bad["data"][4] = serde_json::json!(40.0); // second point's input x is not 32
-        assert!(parse_distortion(&serde_json::json!({"display_distortion": {"left_display": bad, "right_display": grid_json(4, 3, 0.0)}})).is_none());
-        assert!(parse_distortion(&serde_json::json!({})).is_none());
+        let [l, r] = c.eye_orientations.unwrap();
+        assert!((l[0] - 0.99997).abs() < 1e-5 && (l[2] - 0.0073439).abs() < 1e-6, "{l:?}"); // stored w, x, y, z; the config has x, y, z, w
+        assert!((r[3] - 0.0014253).abs() < 1e-6, "{r:?}");
     }
 
     #[test]
@@ -429,6 +469,55 @@ mod tests {
         let mut body = vec![0x22, nested.len() as u8];
         body.extend_from_slice(&nested);
         assert_eq!(reply_config_json(&body), Some(json));
+    }
+
+    fn pair() -> (Conn, TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (Conn { stream: client, buf: Vec::new(), last_temperature_log: None }, server)
+    }
+
+    #[test]
+    fn a_quiet_line_is_not_a_closed_connection() {
+        let (mut c, mut server) = pair();
+        assert_eq!(c.read_frame(Duration::from_millis(50)), Next::Quiet);
+        server.write_all(&[0x27, 0x2a, 0, 0, 0, 2, 0xaa, 0xbb]).unwrap();
+        assert_eq!(c.read_frame(Duration::from_secs(2)), Next::Frame(10026, vec![0xaa, 0xbb]));
+        assert_eq!(c.read_frame(Duration::from_millis(50)), Next::Quiet);
+    }
+
+    #[test]
+    fn a_closed_connection_ends_the_reader() {
+        let (mut c, server) = pair();
+        drop(server);
+        assert_eq!(c.read_frame(Duration::from_secs(2)), Next::Closed);
+    }
+
+    #[test]
+    fn a_frame_split_across_reads_is_reassembled() {
+        let (mut c, mut server) = pair();
+        server.write_all(&[0x27, 0x2a, 0, 0, 0]).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        server.write_all(&[3, 1, 2, 3]).unwrap();
+        assert_eq!(c.read_frame(Duration::from_secs(2)), Next::Frame(10026, vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn the_setter_is_planned_once_and_only_from_the_regular_mode() {
+        assert_eq!(plan_sbs(Some(0), false, 0), SbsPlan::Send);
+        assert_eq!(plan_sbs(Some(1), false, 0), SbsPlan::AlreadySet(1));
+        assert_eq!(plan_sbs(Some(0), true, 0), SbsPlan::Skip("already sent on this connection"));
+        assert_eq!(plan_sbs(Some(0), false, MAX_SBS_SETS), SbsPlan::Skip("the setter limit for this run is reached"));
+        assert_eq!(plan_sbs(Some(0), false, MAX_SBS_SETS - 1), SbsPlan::Send);
+        assert!(matches!(plan_sbs(None, false, 0), SbsPlan::Skip(_)));
+    }
+
+    #[test]
+    fn setter_replies_report_success_or_a_rejection_code() {
+        assert_eq!(reply_status(&[0x22, 0x00]), Some(0));
+        assert_eq!(reply_status(&[0x22, 0x03, 0x08, 0x91, 0x4e]), Some(10001));
+        assert_eq!(reply_status(&[0x00]), None);
     }
 
     #[test]
