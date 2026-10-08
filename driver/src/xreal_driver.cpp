@@ -69,7 +69,14 @@ static const uint32_t kUsageFlags = kUsageTransferSrc | kUsageSampled | kUsageIn
 //   type 5 VBLANK:  [5, sequence, monotonic_ns_lo, monotonic_ns_hi]   (0 ns: the time of arrival is the best estimate)
 //   type 6 USING:   [6, frame_number]   it reads that frame from now on and has released every older one
 //   type 7 CONFIG:  [7, ipd_m, left, right, top, bottom]   f32 bits; the glasses' own field of view (raw projection tangents) and IPD
-enum MsgType : uint32_t { kMsgSet = 1, kMsgDestroy = 2, kMsgPresent = 3, kMsgPose = 4, kMsgVblank = 5, kMsgUsing = 6, kMsgConfig = 7 };
+// the handshake, first on every connection:
+//   type 8 HELLO:       [8, protocol_version]                          driver -> presenter
+//   type 9 HELLO_REPLY: [9, protocol_version, glasses_present, reason]  presenter -> driver
+enum MsgType : uint32_t { kMsgSet = 1, kMsgDestroy = 2, kMsgPresent = 3, kMsgPose = 4, kMsgVblank = 5, kMsgUsing = 6, kMsgConfig = 7, kMsgHello = 8, kMsgHelloReply = 9 };
+// Must equal PROTOCOL_VERSION in presenter/src/link.rs; bump both when a message of this link changes meaning.
+constexpr uint32_t kProtocolVersion = 1;
+
+constexpr int kHandshakeTimeoutMs = 30000;
 
 class PresenterLink {
 public:
@@ -438,6 +445,11 @@ public:
                     geometry_.ipd = ipd;
                     geometry_.have = true;
                 }
+            } else if (w[0] == kMsgHelloReply) {
+                helloReplied_ = true;
+                helloVersion_ = w[1];
+                glassesPresent_ = w[2] != 0;
+                helloReason_ = w[3];
             } else if (w[0] == kMsgUsing) {
                 presenterReleases_ = true;
                 while (!offered_.empty() && (int32_t)(offered_.front().frame - w[1]) < 0) offered_.pop_front();
@@ -448,6 +460,25 @@ public:
         in.tracked = poseValid_;
         for (int i = 0; i < 4; i++) in.q[i] = pose_[i];
         for (int i = 0; i < 3; i++) in.omega[i] = omega_[i];
+    }
+
+    // Waits up to timeoutMs for the presenter's answer to our HELLO. True only if the presenter speaks our protocol and reports the
+    // glasses present; otherwise says why in the log. The caller must not hold mutex_.
+    bool WaitForGlasses(int timeoutMs) {
+        PresenterInput unused;
+        for (int waited = 0; waited < timeoutMs; waited += 50) {
+            PollMessages(unused, 50);
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!helloReplied_) continue;
+            if (helloVersion_ != kProtocolVersion) {
+                Log("the presenter speaks protocol version %u, this driver %u; reporting no headset (restart SteamVR after updating)", helloVersion_, kProtocolVersion);
+                return false;
+            }
+            if (!glassesPresent_) Log("the presenter reports no usable glasses (reason %u: %s); reporting no headset", helloReason_, helloReason_ == 1 ? "no answer on the control port" : helloReason_ == 3 ? "not in full side by side" : "unspecified");
+            return glassesPresent_;
+        }
+        Log("no answer from the presenter within %d ms (is it running, and is it the same release?); reporting no headset", timeoutMs);
+        return false;
     }
 
     void GetFrameTiming(vr::DriverDirectMode_FrameTiming *t) override {
@@ -519,6 +550,9 @@ private:
     void ResyncIfNew() {
         if (!link_.TakeJustConnected()) return;
         ForgetPresenterLocked();
+        helloReplied_ = false;
+        uint32_t hello[16] = {kMsgHello, kProtocolVersion};
+        link_.Send(hello);
         for (auto *s : sets_) SendSet(*s);
     }
 
@@ -562,6 +596,10 @@ private:
     int unknownTextureLogs_ = 0;
     int reclaimLogs_ = 0;
     PresenterLink link_;
+    bool helloReplied_ = false;
+    uint32_t helloVersion_ = 0;
+    bool glassesPresent_ = false;
+    uint32_t helloReason_ = 0;
     double pose_[4] = {1, 0, 0, 0};
     double omega_[3] = {0, 0, 0};
     bool poseValid_ = false;
@@ -581,6 +619,8 @@ public:
     }
 
     const std::string &Serial() const { return settings_.serial; }
+
+    bool WaitForGlasses(int timeoutMs) { return direct_->WaitForGlasses(timeoutMs); }
 
     vr::EVRInitError Activate(uint32_t id) override {
         id_ = id;
@@ -715,6 +755,12 @@ public:
         VR_INIT_SERVER_DRIVER_CONTEXT(context);
         Log("xreal driver prototype starting");
         hmd_ = std::make_unique<HmdDevice>();
+        // No headset until the presenter confirms the glasses (a machine with the driver registered and no glasses shows nothing).
+        // The wait covers a presenter that is only now being started by its socket unit and a 2D to full SBS switch.
+        if (!hmd_->WaitForGlasses(kHandshakeTimeoutMs)) {
+            Log("not adding the XREAL headset");
+            return vr::VRInitError_None;
+        }
         if (!vr::VRServerDriverHost()->TrackedDeviceAdded(hmd_->Serial().c_str(), vr::TrackedDeviceClass_HMD, hmd_.get())) {
             Log("TrackedDeviceAdded failed");
             return vr::VRInitError_Driver_Unknown;

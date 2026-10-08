@@ -45,7 +45,7 @@ pub fn uptime_s() -> f64 {
 }
 
 /// The sorted, de-duplicated mode list the kernel reports for the connector named `monitor` (for example `DP-1`), or None if it has no entry.
-fn read_modes(monitor: &str) -> Option<Vec<String>> {
+pub fn read_modes(monitor: &str) -> Option<Vec<String>> {
     for card in std::fs::read_dir("/sys/class/drm").ok()?.flatten() {
         let name = card.file_name().to_string_lossy().into_owned();
         if name.starts_with("card") && name.ends_with(&format!("-{monitor}")) {
@@ -60,10 +60,11 @@ fn read_modes(monitor: &str) -> Option<Vec<String>> {
 }
 
 /// Log every change of the connector's mode list; a single `3840x1080` is full side-by-side, anything else means the glasses are in 2D (or gone).
-pub fn watch_display_modes(monitor: String) {
+pub fn watch_display_modes(monitor_override: Option<String>) {
     let mut last: Option<Vec<String>> = None;
     loop {
-        let now = read_modes(&monitor);
+        let monitor = monitor_override.clone().or_else(|| crate::output::find_glasses_connector(std::path::Path::new("/sys/class/drm")));
+        let now = monitor.as_deref().and_then(read_modes);
         if now != last {
             let text = now.as_ref().map(|m| m.join(" ")).unwrap_or_else(|| "no connector".into());
             println!("[display +{:.1}s] modes: {text}", uptime_s());
@@ -378,7 +379,7 @@ fn publish(shared: &SharedCalibration, json: &str, source: &str) {
 }
 
 /// Read the config once per connection, set full SBS if asked, then log the glasses' events until the connection really ends; reconnect forever.
-pub fn run(shared: SharedCalibration, set_sbs: bool) {
+pub fn run(shared: SharedCalibration, set_sbs: bool, status: Arc<crate::link::GlassesStatus>) {
     if let Some(json) = load_cache() {
         publish(&shared, &json, "cache");
     }
@@ -387,6 +388,7 @@ pub fn run(shared: SharedCalibration, set_sbs: bool) {
         let addr = HOSTS[which % HOSTS.len()];
         which += 1;
         let Ok(stream) = TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(2)) else {
+            status.set_reachable(false);
             std::thread::sleep(Duration::from_millis(1000));
             continue;
         };
@@ -397,8 +399,12 @@ pub fn run(shared: SharedCalibration, set_sbs: bool) {
             Some(json) => {
                 save_cache(json);
                 publish(&shared, json, "glasses");
+                status.set_reachable(true);
             }
-            None => eprintln!("no usable GetConfig reply"),
+            None => {
+                eprintln!("no usable GetConfig reply");
+                status.set_reachable(false);
+            }
         }
         if set_sbs && c.ensure_sbs(sbs_sent) {
             sbs_sent += 1;
@@ -411,6 +417,7 @@ pub fn run(shared: SharedCalibration, set_sbs: bool) {
             }
         }
         println!("[control +{:.1}s] connection closed", uptime_s());
+        status.set_reachable(false);
         std::thread::sleep(Duration::from_millis(1000));
     }
 }

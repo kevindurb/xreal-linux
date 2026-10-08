@@ -4,13 +4,15 @@
 //! glasses really show a different image to each eye in their SBS mode. It will grow into the thing that imports
 //! SteamVR's per-eye textures and presents them.
 //!
-//! usage: xreal-presenter [--monitor NAME] [--reproject] [--eye-rotation | --eye-rotation-reversed] [--test-grid] [--no-set-sbs | --set-sbs-only] [--no-imu-calibration] [--print-calibration] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default monitor name: DP-1)
+//! usage: xreal-presenter [--monitor NAME] [--socket-name NAME] [--service] [--reproject] [--eye-rotation | --eye-rotation-reversed] [--test-grid] [--no-set-sbs | --set-sbs-only] [--no-imu-calibration] [--print-calibration] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default output: the one whose EDID is the glasses')
 //!
 //! Left half of the screen = left eye (red tint), right half = right eye (blue tint). A green square slides across
 //! each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
 //! float at a different depth from the frame. White borders and a white centre line show the exact edges.
 
 mod glasses;
+mod link;
+mod output;
 mod tracking;
 mod warp;
 
@@ -46,6 +48,9 @@ fn sync_file_pending(fd: RawFd, timeout_ms: i32) -> bool {
 
 /// fd of the connection to the driver (or -1); lets the render thread send vsync messages.
 static DRIVER_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// `--socket-name`: the abstract socket to listen on instead of `xreal-presenter-<uid>`.
+static SOCKET_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 // ---- link to the SteamVR driver -------------------------------------------------------------------------------
 // The driver (driver/src/xreal_driver.cpp) connects to a SOCK_SEQPACKET unix socket and sends fixed 16-word messages:
@@ -89,22 +94,35 @@ struct Shared {
     connected: bool,
 }
 
-fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>, calibration: glasses::SharedCalibration) {
+fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>, calibration: glasses::SharedCalibration, glasses_status: Arc<link::GlassesStatus>) {
     unsafe {
         // Abstract socket (leading NUL): visible from SteamVR's pressure-vessel container, unlike a file path.
-        let name = format!("xreal-presenter-{}", libc::getuid());
+        let name = SOCKET_NAME.get().cloned().unwrap_or_else(|| link::default_socket_name(libc::getuid()));
         let path = format!("@{name}");
-        let ls = libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0);
-        let mut addr: libc::sockaddr_un = std::mem::zeroed();
-        addr.sun_family = libc::AF_UNIX as _;
-        for (i, b) in name.bytes().enumerate() {
-            addr.sun_path[i + 1] = b as _;
-        }
-        let len = (std::mem::size_of::<libc::sa_family_t>() + 1 + name.len()) as u32;
-        if libc::bind(ls, &addr as *const _ as *const libc::sockaddr, len) != 0 || libc::listen(ls, 1) != 0 {
-            eprintln!("cannot listen on {path}: {}", std::io::Error::last_os_error());
-            return;
-        }
+        let ls = if let Some(fd) = link::systemd_listen_fd(std::env::var("LISTEN_PID").ok().as_deref(), std::env::var("LISTEN_FDS").ok().as_deref(), std::process::id()) {
+            println!("using the socket handed over by systemd (fd {fd}) for {path}");
+            std::env::remove_var("LISTEN_PID");
+            std::env::remove_var("LISTEN_FDS");
+            fd
+        } else {
+            let ls = libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0);
+            let mut addr: libc::sockaddr_un = std::mem::zeroed();
+            addr.sun_family = libc::AF_UNIX as _;
+            for (i, b) in name.bytes().enumerate() {
+                addr.sun_path[i + 1] = b as _;
+            }
+            let len = (std::mem::size_of::<libc::sa_family_t>() + 1 + name.len()) as u32;
+            if libc::bind(ls, &addr as *const _ as *const libc::sockaddr, len) != 0 || libc::listen(ls, 1) != 0 {
+                let e = std::io::Error::last_os_error();
+                if e.raw_os_error() == Some(libc::EADDRINUSE) {
+                    eprintln!("cannot listen on {path}: the socket is already in use, probably by xreal-linux.socket or another presenter (systemctl --user stop xreal-linux.socket, or pick another name with --socket-name)");
+                } else {
+                    eprintln!("cannot listen on {path}: {e}");
+                }
+                std::process::exit(1);
+            }
+            ls
+        };
         println!("waiting for the driver on {path}");
         loop {
             let c = libc::accept(ls, std::ptr::null_mut(), std::ptr::null_mut());
@@ -155,6 +173,8 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
                     }
                 });
             }
+            let mut first = true;
+            let mut refused = false; // the driver speaks another protocol version: log it once, present nothing
             loop {
                 let mut words = [0u32; 16];
                 let mut ctl = [0u64; 8]; // aligned control buffer
@@ -182,6 +202,40 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
                         libc::close(fd);
                     }
                     break;
+                }
+                if first {
+                    first = false;
+                    let dv = link::driver_version(&words);
+                    if let Err(why) = link::check_version(dv, link::PROTOCOL_VERSION) {
+                        eprintln!("{why}; not presenting");
+                        refused = true;
+                        if dv != 0 {
+                            let w = link::hello_reply(false, link::REASON_VERSION_MISMATCH);
+                            libc::send(c, w.as_ptr() as *const _, 64, libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT);
+                        }
+                    } else {
+                        // The reply waits for the glasses, so it is sent from its own thread and the driver's later messages are not held up.
+                        let status = glasses_status.clone();
+                        std::thread::spawn(move || {
+                            let present = status.wait_reachable(std::time::Duration::from_secs(6));
+                            let reason = if present { link::REASON_OK } else { link::REASON_GLASSES_UNREACHABLE };
+                            if present {
+                                println!("telling the driver the glasses are present");
+                            } else {
+                                eprintln!("telling the driver there are no usable glasses: {}", link::reason_text(reason));
+                            }
+                            let w = link::hello_reply(present, reason);
+                            if DRIVER_FD.load(Ordering::Relaxed) == c {   // the connection may have ended while we waited
+                                unsafe { libc::send(c, w.as_ptr() as *const _, 64, libc::MSG_NOSIGNAL) };
+                            }
+                        });
+                    }
+                }
+                if refused || words[0] == link::MSG_HELLO {
+                    for fd in fds {
+                        libc::close(fd);
+                    }
+                    continue;
                 }
                 let mut sh = shared.lock().unwrap();
                 match words[0] {
@@ -766,6 +820,31 @@ impl Gfx {
             vk::DependencyFlags::empty(), &[], &[], &[back]);
     }
 
+    unsafe fn destroy_imported(&mut self, im: ImportedImage) {
+        self.seen.remove(&im.image);
+        if let Some(w) = &self.warp {
+            if im.view != vk::ImageView::null() { self.device.destroy_image_view(im.view, None); }
+            if im.set != vk::DescriptorSet::null() { let _ = self.device.free_descriptor_sets(w.pool, &[im.set]); }
+        }
+        self.device.destroy_image(im.image, None);
+        self.device.free_memory(im.memory, None);
+    }
+
+    /// Give back every image imported from the driver's sets before this device goes away, and refill each set's descriptors from
+    /// its kept dup of the dma-buf, so a later device can import the same set again (importing consumes the fd).
+    unsafe fn release_imports(&mut self, shared: &Mutex<Shared>) {
+        let _ = self.device.device_wait_idle();
+        let mut sh = shared.lock().unwrap();
+        for set in sh.sets.values_mut() {
+            if let Some(imgs) = set.images.take() {
+                for im in imgs {
+                    self.destroy_imported(im);
+                }
+                set.fds = [libc::dup(set.sync_fds[0]), libc::dup(set.sync_fds[1]), libc::dup(set.sync_fds[2])];
+            }
+        }
+    }
+
     /// Free destroyed sets, import the sets the latest PRESENT refers to, and return the two eye images (if any).
     unsafe fn prepare_eyes(&mut self, shared: &Mutex<Shared>) -> Option<Eyes> {
         let mut guard = shared.lock().unwrap();
@@ -776,13 +855,7 @@ impl Gfx {
                 match set.images {
                     Some(imgs) => {
                         for im in imgs {
-                            self.seen.remove(&im.image);
-                            if let Some(w) = &self.warp {
-                                if im.view != vk::ImageView::null() { self.device.destroy_image_view(im.view, None); }
-                                if im.set != vk::DescriptorSet::null() { let _ = self.device.free_descriptor_sets(w.pool, &[im.set]); }
-                            }
-                            self.device.destroy_image(im.image, None);
-                            self.device.free_memory(im.memory, None);
+                            self.destroy_imported(im);
                         }
                     }
                     None => {
@@ -1130,8 +1203,12 @@ fn leave_fullscreen_first(attempt: u32) -> bool {
     attempt % 2 == 0
 }
 
+/// How long after the driver disconnects a service keeps running, so a SteamVR restart does not tear everything down.
+const IDLE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 struct App {
-    monitor_name: String,
+    /// `--monitor`: use this output instead of finding the glasses by EDID.
+    monitor_override: Option<String>,
     window: Option<Window>,
     gfx: Option<Gfx>,
     start: Instant,
@@ -1139,37 +1216,117 @@ struct App {
     last_report: Instant,
     shared: Arc<Mutex<Shared>>,
     last_monitor_check: Instant,
+    last_output_check: Option<Instant>,
+    last_open_failure: Option<Instant>,
     move_attempts: u32,
     reproject: bool,
     test_grid: bool,
     dump_dir: Option<std::path::PathBuf>,
     dump_count: u32,
     pose: Arc<Mutex<tracking::PoseState>>,
+    /// Exit a few seconds after the driver goes away (the socket-activated service); otherwise run until closed.
+    service: bool,
+    /// Show the window without waiting for a driver (`--test-grid`, `--sim-pose`).
+    standalone: bool,
+    ever_connected: bool,
+    disconnected_since: Option<Instant>,
+    /// What the last tick decided about the window, to log changes only.
+    last_reason: Option<String>,
+    /// When the window last became wanted; it opens only after the output has been stable for `SETTLE`.
+    wanted_since: Option<Instant>,
+}
+
+/// How long the glasses' output must have been there in full SBS before a window opens on it: right after a re-plug the compositor
+/// is still configuring the new output and placed a window requested at once on the internal screen (measured on the Deck).
+fn settle() -> std::time::Duration {
+    std::time::Duration::from_millis(std::env::var("XREAL_SETTLE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000))
+}
+
+/// The connector the glasses are on right now: `--monitor`, else the output whose EDID is the glasses'.
+fn glasses_output(override_name: &Option<String>) -> Option<String> {
+    override_name.clone().or_else(|| output::find_glasses_connector(std::path::Path::new("/sys/class/drm")))
+}
+
+/// Why the window should not exist right now, or None if it should.
+fn window_blocker(driver_ok: bool, output: Option<&str>, output_in_compositor: bool, sbs: bool) -> Option<String> {
+    if !driver_ok {
+        return Some("waiting for the SteamVR driver".into());
+    }
+    let Some(name) = output else { return Some("the glasses' output does not exist".into()) };
+    if !output_in_compositor {
+        return Some(format!("the compositor does not list the output {name} yet"));
+    }
+    if !sbs {
+        return Some(format!("{name} is not in full side by side"));
+    }
+    None
+}
+
+impl App {
+    fn open_window(&mut self, el: &ActiveEventLoop, name: &str) {
+        let matches: Vec<_> = el.available_monitors().filter(|m| m.name().as_deref() == Some(name)).collect();
+        for m in &matches {
+            println!("  candidate {name}: {}x{} at {:?}", m.size().width, m.size().height, m.position());
+        }
+        // After a re-plug the compositor can list the output twice for a moment (the old and the new one); the current one has the SBS size.
+        let Some(monitor) = matches.iter().rev().find(|m| m.size().width == 3840 && m.size().height == 1080).or(matches.last()).cloned() else { return };
+        let window = match el.create_window(Window::default_attributes().with_title("XREAL presenter").with_fullscreen(Some(Fullscreen::Borderless(Some(monitor))))) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("cannot create the window: {e}");
+                self.last_open_failure = Some(Instant::now());
+                return;
+            }
+        };
+        match unsafe { Gfx::new(&window, self.reproject, self.test_grid) } {
+            Ok(mut gfx) => {
+                gfx.dump_dir = self.dump_dir.clone();
+                gfx.dump_count = self.dump_count;
+                println!("window opened on {name}");
+                self.gfx = Some(gfx);
+                self.window = Some(window);
+                self.move_attempts = 0;
+                self.last_monitor_check = Instant::now();
+            }
+            Err(e) => {
+                eprintln!("vulkan init failed: {e}");
+                self.last_open_failure = Some(Instant::now());
+            }
+        }
+    }
+
+    fn close_window(&mut self, why: &str) {
+        if let Some(mut g) = self.gfx.take() {
+            unsafe { g.release_imports(&self.shared) };
+            drop(g);
+        }
+        if self.window.take().is_some() {
+            println!("window closed: {why}");
+        }
+    }
+
+    /// Free what the driver destroyed while there was no window to import it into.
+    fn drain_destroyed(&self) {
+        let mut guard = self.shared.lock().unwrap();
+        let sh = &mut *guard;
+        for id in sh.destroyed.drain(..) {
+            if let Some(set) = sh.sets.remove(&id) {
+                unsafe {
+                    for fd in set.sync_fds { libc::close(fd); }
+                    if set.images.is_none() { for fd in set.fds { libc::close(fd); } }
+                }
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         println!("monitors:");
-        let mut chosen = None;
         for m in el.available_monitors() {
-            let name = m.name().unwrap_or_default();
             let s = m.size();
-            println!("  {name}: {}x{} at {:?}, refresh {:?} mHz", s.width, s.height, m.position(), m.refresh_rate_millihertz());
-            if name == self.monitor_name {
-                chosen = Some(m);
-            }
+            println!("  {}: {}x{} at {:?}, refresh {:?} mHz", m.name().unwrap_or_default(), s.width, s.height, m.position(), m.refresh_rate_millihertz());
         }
-        if chosen.is_none() {
-            eprintln!("monitor '{}' not found, using the compositor's choice", self.monitor_name);
-        }
-        let window = el
-            .create_window(Window::default_attributes().with_title("XREAL presenter").with_fullscreen(Some(Fullscreen::Borderless(chosen))))
-            .expect("create window");
-        let mut gfx = unsafe { Gfx::new(&window, self.reproject, self.test_grid) }.expect("vulkan init");
-        gfx.dump_dir = self.dump_dir.clone();
-        gfx.dump_count = self.dump_count;
-        self.gfx = Some(gfx);
-        self.window = Some(window);
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1177,6 +1334,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => el.exit(),
             WindowEvent::Resized(size) => {
+                println!("window resized to {}x{}", size.width, size.height);
                 if let Some(g) = &mut self.gfx {
                     let _ = unsafe { g.create_swapchain(size) };
                 }
@@ -1216,28 +1374,80 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
-        if let Some(w) = &self.window {
-            // When the glasses re-plug (mode change, sleep and wake) the compositor can drop our window onto another
-            // output. Keep putting it back on the glasses' output whenever that output exists.
-            if self.last_monitor_check.elapsed() >= std::time::Duration::from_millis(500) {
-                self.last_monitor_check = Instant::now();
-                let current = w.current_monitor().and_then(|m| m.name());
-                if current.as_deref() == Some(self.monitor_name.as_str()) {
-                    self.move_attempts = 0;
-                } else if let Some(m) = w.available_monitors().find(|m| m.name().as_deref() == Some(self.monitor_name.as_str())) {
-                    println!("window is on {:?}; moving it to {} (attempt {})", current, self.monitor_name, self.move_attempts + 1);
-                    w.set_fullscreen(if leave_fullscreen_first(self.move_attempts) { None } else { Some(Fullscreen::Borderless(Some(m))) });
-                    self.move_attempts += 1;
-                }
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        let connected = self.shared.lock().unwrap().connected;
+        if connected {
+            self.ever_connected = true;
+            self.disconnected_since = None;
+        } else if self.ever_connected && self.disconnected_since.is_none() {
+            self.disconnected_since = Some(Instant::now());
+        }
+        if self.service && self.disconnected_since.is_some_and(|t| t.elapsed() >= IDLE_GRACE) {
+            self.close_window("the driver disconnected");
+            println!("the driver has been gone for {} s; exiting", IDLE_GRACE.as_secs());
+            el.exit();
+            return;
+        }
+        // The window follows the glasses' output: it exists only while the driver is connected and that output is there in full SBS.
+        // winit has no hotplug event, so the output is looked at a few times a second.
+        if self.last_output_check.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(250)) {
+            self.last_output_check = Some(Instant::now());
+            let output = glasses_output(&self.monitor_override);
+            let listed = output.as_deref().is_some_and(|n| el.available_monitors().any(|m| m.name().as_deref() == Some(n)));
+            let sbs = output.as_deref().and_then(glasses::read_modes).is_some_and(|m| m == ["3840x1080"]);
+            let blocker = window_blocker(connected || self.standalone, output.as_deref(), listed, sbs);
+            if blocker != self.last_reason {
+                println!("[window +{:.1}s] {}", glasses::uptime_s(), blocker.as_deref().unwrap_or("the driver is connected and the glasses' output is in full side by side"));
+                self.last_reason = blocker.clone();
             }
-            w.request_redraw();
+            if blocker.is_some() {
+                self.wanted_since = None;
+            } else if self.wanted_since.is_none() {
+                self.wanted_since = Some(Instant::now());
+            }
+            let settled = self.wanted_since.is_some_and(|t| t.elapsed() >= settle());
+            match (&blocker, self.window.is_some()) {
+                (Some(why), true) => self.close_window(why),
+                (None, false) if settled && self.last_open_failure.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2)) => {
+                    if let Some(name) = output {
+                        self.open_window(el, &name);
+                    }
+                }
+                _ => {}
+            }
+            if self.window.is_none() {
+                self.drain_destroyed();
+            }
+        }
+        match &self.window {
+            Some(w) => {
+                el.set_control_flow(ControlFlow::Poll);
+                // When the glasses re-plug (mode change, sleep and wake) the compositor can drop our window onto another
+                // output. Keep putting it back on the glasses' output whenever that output exists.
+                if self.last_monitor_check.elapsed() >= std::time::Duration::from_millis(500) {
+                    self.last_monitor_check = Instant::now();
+                    let target = glasses_output(&self.monitor_override);
+                    let current = w.current_monitor().and_then(|m| m.name());
+                    if current.is_none() {
+                        // Not on any output yet (the compositor has not mapped the window); leaving fullscreen now is what put it on the internal screen.
+                    } else if target.is_some() && current == target {
+                        self.move_attempts = 0;
+                    } else if let Some(m) = target.as_deref().and_then(|t| w.available_monitors().find(|m| m.name().as_deref() == Some(t))) {
+                        println!("window is on {:?}; moving it to {:?} (attempt {})", current, target, self.move_attempts + 1);
+                        w.set_fullscreen(if leave_fullscreen_first(self.move_attempts) { None } else { Some(Fullscreen::Borderless(Some(m))) });
+                        self.move_attempts += 1;
+                    }
+                }
+                w.request_redraw();
+            }
+            None => el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + std::time::Duration::from_millis(100))),
         }
     }
 }
 
 fn main() {
-    let mut monitor_name = "DP-1".to_string();
+    let mut monitor_override: Option<String> = None;
+    let mut service = std::env::var_os("LISTEN_FDS").is_some();
     let mut reproject = false;
     let mut test_grid = false;
     let mut sim_pose = false;
@@ -1251,7 +1461,11 @@ fn main() {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         if a == "--monitor" {
-            monitor_name = args.next().expect("--monitor needs a name");
+            monitor_override = Some(args.next().expect("--monitor needs a name"));
+        } else if a == "--service" {
+            service = true;
+        } else if a == "--socket-name" {
+            let _ = SOCKET_NAME.set(args.next().expect("--socket-name needs a name"));
         } else if a == "--reproject" {
             reproject = true;
         } else if a == "--eye-rotation" {
@@ -1287,7 +1501,8 @@ fn main() {
         std::process::exit(if glasses::set_sbs_once() { 0 } else { 1 });
     }
     let calibration: glasses::SharedCalibration = Arc::new(Mutex::new(None));
-    { let cal = calibration.clone(); std::thread::spawn(move || glasses::run(cal, set_sbs && !print_calibration)); }
+    let glasses_status = Arc::new(link::GlassesStatus::default());
+    { let cal = calibration.clone(); let gs = glasses_status.clone(); std::thread::spawn(move || glasses::run(cal, set_sbs && !print_calibration, gs)); }
     if print_calibration {
         for _ in 0..120 {
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1299,7 +1514,7 @@ fn main() {
         eprintln!("no calibration within 12 s");
         std::process::exit(1);
     }
-    { let m = monitor_name.clone(); std::thread::spawn(move || glasses::watch_display_modes(m)); }
+    { let m = monitor_override.clone(); std::thread::spawn(move || glasses::watch_display_modes(m)); }
     let el = EventLoop::new().expect("event loop");
     el.set_control_flow(ControlFlow::Poll);
     let shared = Arc::new(Mutex::new(Shared::default()));
@@ -1314,14 +1529,24 @@ fn main() {
         let cal = calibration.clone();
         std::thread::spawn(move || tracking::run(p, cal, use_imu_calibration));
     }
-    { let (sh, p) = (shared.clone(), pose.clone()); let cal = calibration.clone(); std::thread::spawn(move || link_thread(sh, p, cal)); }
-    let mut app = App { monitor_name, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), move_attempts: 0, reproject, test_grid, dump_dir, dump_count, pose: pose_for_app };
+    { let (sh, p) = (shared.clone(), pose.clone()); let cal = calibration.clone(); let gs = glasses_status.clone(); std::thread::spawn(move || link_thread(sh, p, cal, gs)); }
+    let standalone = test_grid || sim_pose;
+    let mut app = App { monitor_override, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), last_output_check: None, last_open_failure: None, move_attempts: 0, reproject, test_grid, dump_dir, dump_count, pose: pose_for_app, service, standalone, ever_connected: false, disconnected_since: None, last_reason: None, wanted_since: None };
     el.run_app(&mut app).expect("run");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_exists_only_with_a_driver_and_the_glasses_in_full_sbs() {
+        assert_eq!(window_blocker(true, Some("DP-1"), true, true), None);
+        assert!(window_blocker(false, Some("DP-1"), true, true).unwrap().contains("driver"));
+        assert!(window_blocker(true, None, false, false).unwrap().contains("does not exist"));
+        assert!(window_blocker(true, Some("DP-1"), false, true).unwrap().contains("compositor"));
+        assert!(window_blocker(true, Some("DP-1"), true, false).unwrap().contains("full side by side"));
+    }
 
     #[test]
     fn moving_the_window_alternates_leaving_and_entering_fullscreen() {
