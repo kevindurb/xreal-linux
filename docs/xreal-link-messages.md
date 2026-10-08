@@ -555,3 +555,27 @@ anything but the allowlisted read-only getters.
   nanosecond timestamp at packet offset 14). My packet had no such header. A request probably needs the full header and may need an
   initial handshake message (`NotifyClientInfo`/`NRGlassesSetSDKVersion`, id 10014); neither is known yet.
 - Not yet tried: the push-stream ports (52996-52999) as request ports; a request with a full 22-byte header; a handshake first.
+
+
+## 12. Why a "full header" retry was not attempted: the SDK's packet header and sockets are local IPC (2026-10-08)
+
+Reading the SDK's own sender (ControlGlasses 3.1.0, `libnr_service.so`) to find the header a request needs:
+
+- **XrealLink has two clients, both aimed at `127.0.0.1`**: the TCP client on port **8099** (section 11.2 of `docs/nebula-findings.md`) and a **UDP**
+  client (`socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)`, network-order port constant `0xBB1B`, i.e. port **7099**) constructed with the same literal
+  `127.0.0.1`. Both are the SDK-client-to-local-service link, not the glasses.
+- **The library embeds KCP** (reliable UDP): the debug strings of `ikcp.c` (`input psh: sn=%lu ts=%lu`, `input ack: sn=%lu rtt=%ld rto=%ld`,
+  `input probe`, `input wins: %lu`, `recv sn=%lu`, `[RI] %d bytes`, `[RO] %ld bytes`) are in `libnr_service.so`, `libnr_api.so` and `libnr_loader.so`.
+  It is the reliable transport of that local link.
+- **That link's packet header is 17 bytes**: `0xFD`, a u32, a u32 payload length, and a u64 nanosecond timestamp from `CLOCK_MONOTONIC`
+  (payload at offset 0x11). This is **not** the header seen on the glasses' own TCP streams (`msg_id` u16 BE, length u32 BE, then the payload), so
+  copying it would not make a request valid for the glasses.
+- **No glasses-facing client code was found.** No code in the SDK libraries was found that connects to the glasses' link-local address and the
+  ports 52990-52999, and the earlier immediate-value scan found none of those port numbers. The vendor's glasses control path that was found is
+  USB HID with `0xFD`/`0xAA` frames (`cmd_build_sdk`, section 5 of `docs/nebula-findings.md`) and the MCU message table.
+
+Consequences: (1) the rejection of my TCP request (section 11) has no known cause that a different header would fix; (2) there is no evidence
+that the silent TCP ports are request ports at all (they may be push streams for other consumers that close on any input); (3) the camera
+start for anchor mode is initiated by the glasses' own firmware (section 10, and `docs/findings.md`), and nothing here shows a host request
+for it. A further host request would be a guess, so none was sent. The evidence that would settle the question is a capture of a working host
+(a phone running the vendor app) while it starts and stops the camera.
