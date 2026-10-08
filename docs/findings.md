@@ -435,3 +435,29 @@ is 189 rows of 1024 bytes (`tools/decode_camera_frame.py`).
   (about 119 px and 95), and only the first 504 of the 512 stored columns are image. A printed grid decides this (task 1.2 of
   `openspec/changes/add-6dof-camera-tracking`), as does whether the missing rows are skipped or binned.
 
+
+## The Eye camera starts from a host request in Follow mode, but only for four frames (2026-10-08)
+
+Setup: glasses in full SBS, Follow mode, Stabilizer off, SteamVR and the presenter stopped, `tools/xreal_session.py` holding one connection to the
+control port (52999) and reading 52997 and 52996. Every state-changing request was shown to the wearer byte for byte and approved first.
+
+| Step | Request (body `18 00`, transaction ids 1-3) | Result |
+|---|---|---|
+| A (read-only) | `NRDpGetInputMode` 10273, `NRDpGetWorkingState` 10085, `NRGlassesGetSupportedDevices` 10016 | all answered: input mode 1 (side by side, matches the display), working state 1, supported devices 1571 (meaning unknown) |
+| B | `NRGrayscaleCameraCreate` 10047 | answered `22 00` (empty response body: success) |
+| C | `NRGrayscaleCameraStart` 10053 (inferred id) | answered `22 00`; **the first camera frame arrived about 0.5 s later** |
+| D | `NRGrayscaleCameraStop` 10054 (inferred id), sent about 50 s later | no reply within 5 s |
+
+- **The camera does start from a host request, with the glasses in Follow mode and the Stabilizer off.** The earlier reading that it needs the
+  glasses' own anchor mode is not the whole story, and the inferred ids 10053 and 10054 are the right ones: Start produced frames.
+- **It streamed only 4 frames.** They came 66.8 ms apart (15 fps, the anchor-mode rate), 193,862 bytes each, with the same header bytes 6-21 as the
+  anchor-mode frames; then the stream went quiet (0 bytes in a 3 s read of 52997 about 10 s later). No start event (10002) appeared on 52999, which
+  the anchor-mode session does send.
+- **The frame timestamp field:** a **little-endian u64 of nanoseconds at packet offset 23** (1201.164643 s, 1201.231466 s, ...), advancing exactly
+  66.8 ms per frame. Whether it is on the IMU's clock is still to be checked (task 1.3).
+- **Afterwards** the IMU stream still ran at 1,400 records/s with clean framing, the display mode and the USB device were unchanged, and the
+  session tool's cleanup Stop was not needed (it had sent none itself).
+- **Not yet known:** what keeps the stream going. Candidates, none tried: the `InitSet*` requests (10048-10052) that the SDK sends between Create and
+  Start (their values are not documented); a heartbeat or an IMU/vsync session (`NRImuStart` 10036, `NRVsyncStart` 10031) started on the same
+  connection; or the firmware stopping a camera it did not start itself outside anchor mode. A repeated Start was also not tried.
+

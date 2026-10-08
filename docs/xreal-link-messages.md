@@ -662,3 +662,20 @@ The values are per unit and the document includes the serial number, so it is **
   against the config's 504 x 378.
 - **No camera command** is among the commands one-xr documents, so the question from section 11 (can a host request start the camera outside
   anchor mode) is still open.
+
+### 13.4 Requests exercised on the control port (2026-10-08, `tools/xreal_session.py`)
+
+| `msg_id` | Name | Body | Reply |
+|---|---|---|---|
+| 10015 | `NRGlassesGetConfig` | `18 00` | calibration JSON (section 13.1) |
+| 10273 | `NRDpGetInputMode` | `18 00` | `22 02 10 01`: field 2 = 1 (side by side) |
+| 10085 | `NRDpGetWorkingState` | `18 00` | `22 02 10 01`: field 2 = 1 |
+| 10016 | `NRGlassesGetSupportedDevices` | `18 00` | `22 03 10 a3 0c`: field 2 = 1571 |
+| 10047 | `NRGrayscaleCameraCreate` | `18 00` | `22 00` (empty body = success) |
+| 10053 | `NRGrayscaleCameraStart` (inferred id) | `18 00` | `22 00`; four camera frames follow on 52997 |
+| 10054 | `NRGrayscaleCameraStop` (inferred id) | `18 00` | none within 5 s (the stream had already stopped) |
+
+Notes: the SDK ids are the same numbers as the control port's magics (checked for every one of these). `18 00` (field 3, varint 0) was accepted as
+the empty request body for all of them; the SDK's own form `1a 00` was not tried. A reply with an empty body means success; a request with a
+parameter replies with the value in field 2. See `docs/findings.md` for what the camera did.
+
