@@ -243,3 +243,63 @@ packet, which are exactly the four stream types seen on the One's ports. The ran
   packet id, ...), any handshake before requests are accepted, and the protobuf field numbers of the `Create`/`InitSet*` requests.
 - **Nothing was sent.** Sending any of these would be the first host-to-glasses message of this project and needs explicit approval and
   a plan (start with read-only requests such as `NRGlassesGetSWVersion` 10013, `NRGlassesGetStartupState` 10265).
+
+## 5. Verification against the captures in `captures/` (added)
+
+All checks below were run on files already on disk (no glasses involved):
+
+| Capture | Packets parsed with `msg_id` (BE u16) + length (BE u32) | Result |
+|---|---|---|
+| `imu_move.bin` | 53,190 | all `msg_id` **10294**, length 128, zero skipped bytes |
+| `imu_yaw.bin` | 27,995 | all 10294, length 128, zero skipped bytes |
+| `mv_52998.bin` | 34,934 | all 10294, length 128, zero skipped bytes |
+| `xreal_52998_still.bin` | 6,993 | all 10294, length 128, zero skipped bytes |
+| `mv_52996.bin` | 2,997 | all **10033**, length 32, zero skipped bytes (38-byte records) |
+| `mv_52999.bin` | 5 | all **10122**, lengths 7 and 9 |
+| `cam_52997_sample.bin` | 6 complete frames | **10056**, length 193,856, frames at exact 193,862-byte steps |
+| `mv_52990.bin` ... `mv_52995.bin` | 0 | empty: those ports sent nothing |
+
+So the framing `msg_id:u16be, length:u32be, payload` is verified for the camera, IMU, timestamp and event streams.
+
+## 6. The payloads: protobuf-lite (event stream decoded)
+
+The event port's messages decode as ordinary protobuf wire format. Message **10122** (a temperature notification):
+
+| Payload (hex) | Decoded |
+|---|---|
+| `1a 05 15 00 00 70 42` | field 3 = { field 2 = float 60.0 } |
+| `1a 07 08 02 15 9a 99 2f 42` | field 3 = { field 1 = 2, field 2 = float 43.9 } |
+| `1a 07 08 01 15 00 00 5a 42` | field 3 = { field 1 = 1, field 2 = float 54.5 } |
+| `1a 05 15 00 00 74 42` | field 3 = { field 2 = float 61.0 } |
+| `1a 07 08 01 15 33 33 5b 42` | field 3 = { field 1 = 1, field 2 = float 54.8 } |
+
+Field 1 is a sensor index (absent = 0), field 2 the temperature in degrees C. These are the five values seen in the earlier
+status-message analysis in `docs/findings.md`, which is now explained: **52999 carries temperature notifications as protobuf**.
+
+The wrapper has the same shape as the SDK's per-request `...Base` classes: `Base { field 3 = request/notification body,
+field 4 = response body }` (parser constants `0x1a` = field 3 and `0x22` = field 4, section 11.10 of `nebula-findings.md`). The other
+streams' payloads are not protobuf at the outer level (the IMU and timestamp records are fixed binary layouts, and the camera payload
+starts with a binary block that carries a u64 nanosecond timestamp at packet offset 23 plus image meta data followed by the image),
+but they share the same `msg_id` + length envelope.
+
+IMU packet (10294, 128-byte payload): bytes 6-7 vary per packet (`38 41` or `28 be`), byte 8 is `fe` or `ff`, then zeros, the u64 nanosecond
+timestamp is at packet offset 14, as documented in `docs/findings.md`. Timestamp packet (10033, 32-byte payload): payload starts with 8 zero
+bytes, timestamp at offset 14, counter at offset 22.
+
+## 7. Predicted wire form of a request (not sent, not verified)
+
+Putting sections 1, 2 and 6 together, the most likely request is the same envelope with the request wrapped in the `Base` field 3:
+
+    msg_id (BE16) | payload length (BE32) | protobuf: field 3 { request fields }
+
+For a request with an empty body, such as `NRGrayscaleCameraStart` (inferred id 10053 = 0x2745) the payload would be `1a 00`
+and the whole packet `27 45 00 00 00 02 1a 00`; a response would come back as `Base` field 4. A request with fields (for example
+`NRGrayscaleCameraInitSetGain` 10052) needs the protobuf field numbers of its `Req` class, which are readable from its serialiser
+(the same technique used on the `Base` class). Unknowns that could make the prediction wrong: whether requests are accepted on the
+same ports as the streams or on one of the silent ones (52990-52995 accepted connections and sent nothing in all recorded
+sessions), whether a handshake or version message must come first (`NRGlassesSetSDKVersion` 10014 exists), whether `Base` carries
+more fields on the wire than the two the parser handles, and whether the firmware requires a session established with
+`NRGlassesGetSWVersion`/`NRGlassesGetStartupState` first.
+
+**No bytes were sent to the glasses.** Any experiment should start with a read-only request (`NRGlassesGetSWVersion` 10013,
+`NRGlassesGetStartupState` 10265), on one connection, with a short timeout, and with the wearer's go-ahead.
