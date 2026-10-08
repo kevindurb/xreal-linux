@@ -108,14 +108,14 @@ Open:
 1. **The 2D drop-outs:** needs a long session. `tools/vr_session.sh start`, leave it running (worn or on the desk), then on the Deck `python3 ~/xreal-linux/tools/analyze_control_events.py ~/.local/state/xreal-linux/presenter.log`. `NRProximitySetEnable` (10009) only with approval.
 2. **Vertical field of view:** the 0.2190 half tangent still assumes a 1080-row picture centred in 1200 rows; the wearer sees no black bars, and the bottom border is hidden by the lens edge. Not settled, no known fix.
 3. `--eye-rotation` needs the wearer check described in `presenter/README.md`.
-4. The other proposed changes, `add-installable-package` (needs a discussion of what the package is and contains) and `support-other-gpus`, have not been started.
+4. `support-other-gpus` has not been started (`add-installable-package` is archived, see section 9).
 
 ## 8. Status of the OpenSpec changes
 
 | Change | Tasks | State |
 |---|---|---|
 | `add-6dof-camera-tracking` | 4 done, 25 open | **parked** by the user 2026-10-08 (camera start unsolved, see section 7) |
-| `add-installable-package` | see `openspec/changes/add-installable-package/tasks.md` | **mostly built and verified on the Deck 2026-10-08**; open: sleep/wake and unplug by hand (4.4, 2.2/3.4 physical), a clean-account quick-start run (5.11), CI on a pushed tag (6.1), the wearer end-to-end (7.1), game-mode and Flatpak experiments (7.2, 7.3) |
+| `2026-10-08-add-installable-package` | 27 of 31 | archived; open: 1.1 second-distro test pattern, 4.4 real sleep/wake, 7.2 game mode, 7.3 Flatpak Steam |
 | `support-other-gpus` | 0 of 17 | not started |
 | `2026-10-07-fix-dashboard-glitches-and-judder` | archived | done |
 
