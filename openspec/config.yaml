@@ -40,6 +40,7 @@ context: |
     presenter's --reproject (on by default in tools/vr_session.sh). See docs/findings.md. The root cause inside SteamVR is not known.
 
   Environment and workflow:
+  - Read docs/handoff.md first: the current state, the rules for sending requests to the glasses, the tool cheat sheet and the ranked next steps.
   - The Deck is reached with `ssh steamdeck` over Tailscale. Its Tailscale node key can expire (SSH then times out).
   - The Deck host has no Rust and no libstdc++-static: build in podman containers (use /usr/bin/podman, NOT the linuxbrew podman, and set
     XDG_RUNTIME_DIR=/run/user/1000 over SSH). Presenter: fedora:44 + rust/cargo, with a cargo cache volume. Driver: fedora:44 + gcc-c++ + libstdc++-static.
