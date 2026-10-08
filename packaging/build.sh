@@ -26,7 +26,8 @@ install -D -m 0755 build-out/target/release/xreal-presenter dist/xreal-presenter
 install -D -m 0644 driver/xreal/driver.vrdrivermanifest dist/driver/xreal/driver.vrdrivermanifest
 install -D -m 0644 driver/xreal/resources/settings/default.vrsettings dist/driver/xreal/resources/settings/default.vrsettings
 install -D -m 0755 driver/xreal/bin/linux64/driver_xreal.so dist/driver/xreal/bin/linux64/driver_xreal.so
-printf 'commit %s\n' "$COMMIT" > dist/VERSION
+BUILT="$(git log -1 --format=%ct 2>/dev/null || echo 0)"
+printf 'commit %s\nbuilt %s\n' "$COMMIT" "$BUILT" > dist/VERSION
 
 python3 packaging/check_symbols.py dist/driver/xreal/bin/linux64/driver_xreal.so dist/xreal-presenter
 (cd dist && find . -type f | LC_ALL=C sort) | tee build-out/files.txt

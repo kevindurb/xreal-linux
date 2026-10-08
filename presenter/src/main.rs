@@ -13,6 +13,7 @@
 mod glasses;
 mod link;
 mod output;
+mod setup;
 mod tracking;
 mod warp;
 
@@ -1258,7 +1259,7 @@ fn settle() -> std::time::Duration {
     std::time::Duration::from_millis(std::env::var("XREAL_SETTLE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000))
 }
 
-fn report_restore(r: glasses::Restore) {
+pub(crate) fn report_restore(r: glasses::Restore) {
     match r {
         glasses::Restore::NothingRecorded => println!("restore: no display mode was recorded"),
         glasses::Restore::NothingToSend => println!("restore: nothing to send"),
@@ -1490,6 +1491,12 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
+    let mut raw: Vec<String> = std::env::args().skip(1).collect();
+    match setup::dispatch(&raw) {
+        setup::Dispatch::Exit(code) => std::process::exit(code),
+        setup::Dispatch::Present(args) => raw = args,
+        setup::Dispatch::NotACommand => {}
+    }
     let mut monitor_override: Option<String> = None;
     let mut service = std::env::var_os("LISTEN_FDS").is_some();
     let mut reproject = false;
@@ -1502,7 +1509,7 @@ fn main() {
     let mut dump_dir: Option<std::path::PathBuf> = None;
     let (mut use_imu_calibration, mut set_sbs, mut print_calibration, mut set_sbs_only) = (true, true, false, false);
     if let Some(d) = &dump_dir { let _ = d; }
-    let mut args = std::env::args().skip(1);
+    let mut args = raw.into_iter();
     while let Some(a) = args.next() {
         if a == "--monitor" {
             monitor_override = Some(args.next().expect("--monitor needs a name"));
