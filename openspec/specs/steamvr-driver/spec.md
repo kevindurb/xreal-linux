@@ -16,7 +16,7 @@ The driver SHALL register an HMD named "XREAL 1S" that advertises a display comp
 
 ### Requirement: Display geometry
 
-The driver SHALL advertise a per-eye render size (default 1920x1080, the panel's size, overridable with `driver_xreal.render_width` and `render_height`), a 3840x1080 window split into two eye viewports, a display frequency (default 60 Hz), and a symmetric field of view that matches the presenter's reprojection constants.
+The driver SHALL advertise a per-eye render size (default 1920x1080, the panel's size, overridable with `driver_xreal.render_width` and `render_height`), a 3840x1080 window split into two eye viewports, a display frequency (default 60 Hz), and a symmetric field of view (about 42 degrees horizontal by 25 degrees vertical per eye, from the glasses' factory display calibration) that matches the presenter's reprojection constants.
 
 #### Scenario: Lower render size configured
 

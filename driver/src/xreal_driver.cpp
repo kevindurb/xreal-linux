@@ -257,8 +257,8 @@ public:
         *x = eye == vr::Eye_Left ? 0 : s_.windowWidth / 2;
     }
     void GetProjectionRaw(vr::EVREye, float *l, float *r, float *t, float *b) override {
-        // Placeholder field of view (about 48 degrees horizontal); to be replaced with the real optics.
-        *l = -0.45f; *r = 0.45f; *t = -0.253f; *b = 0.253f;
+        // Mean of both eyes' factory display intrinsics, assuming the 1080-row picture sits unscaled in the 1200-row panel.
+        *l = -0.3857f; *r = 0.3857f; *t = -0.2190f; *b = 0.2190f;
     }
     vr::DistortionCoordinates_t ComputeDistortion(vr::EVREye, float u, float v) override {
         vr::DistortionCoordinates_t c{};

@@ -10,7 +10,7 @@
 pub type Quat = [f32; 4]; // w, x, y, z
 
 /// Field of view in OpenVR's raw projection form; must match the driver's GetProjectionRaw.
-pub const FOV: [f32; 4] = [-0.45, 0.45, -0.253, 0.253];
+pub const FOV: [f32; 4] = [-0.3857, 0.3857, -0.2190, 0.2190];
 
 pub fn conj(q: Quat) -> Quat {
     [q[0], -q[1], -q[2], -q[3]]
@@ -91,8 +91,9 @@ mod tests {
         let m = view_delta([1.0, 0.0, 0.0, 0.0], axis_angle([0.0, 1.0, 0.0], 5.0));
         let s = source_uv(&m, [0.5, 0.5], FOV).unwrap();
         assert!(s[0] < 0.5 && (s[1] - 0.5).abs() < 1e-4, "{s:?}");
-        // 5 degrees at +-0.45 tangent half-width: the centre ray moves left by tan(5 deg) = 0.0875 of 0.9 -> about 0.097 of the width
-        assert!(((0.5 - s[0]) - 0.0875 / 0.9).abs() < 0.01, "shift {}", 0.5 - s[0]);
+        // The centre ray moves left by tan(5 degrees) of the picture's tangent width.
+        let expected = 5f32.to_radians().tan() / (FOV[1] - FOV[0]);
+        assert!(((0.5 - s[0]) - expected).abs() < 0.01, "shift {}", 0.5 - s[0]);
     }
 
     #[test]
