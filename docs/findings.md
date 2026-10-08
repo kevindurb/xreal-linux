@@ -428,7 +428,7 @@ The glasses' factory calibration (`docs/xreal-link-messages.md`, section 13) giv
 is 189 rows of 1024 bytes (`tools/decode_camera_frame.py`).
 
 - **Observed, on one recorded frame** (`captures/cam_52997_sample.bin`, frame 1): the right half (512 x 189) stretched to twice its height is a
-  natural-looking 4:3 view of a room, so the stream carries every second sensor row, not the full 378.
+  natural-looking 4:3 view of a room, so the clean picture uses every second row of the 378 (see the later note on the header, which declares 504 x 378 with stride 512).
 - **Checked and rejected:** that two image rows share each 1024-byte payload row (left half as the even rows, right half as the odd rows).
   Adjacent-row correlation is 0.88 for the right half alone and 0.53 when interleaved, and the interleaved picture shows a row pattern.
 - **Inferred, not checked:** the factory vertical focal length (about 239 px) and principal point row (about 190) halve for the stream's pixels
@@ -484,4 +484,22 @@ Same glasses, same tool, about 25 minutes after the first session, no replug in 
   the glasses worn.
 - Still unknown: whether a camera that is configured first (the `InitSet*` requests) streams continuously. Their values are not known
   (`docs/xreal-link-messages.md` section 13.5).
+
+### The four-frame burst reproduces; the frame header declares the image size (2026-10-08, after the replug)
+
+- **Same sequence, fresh replug, glasses worn** (the wearing-state getter read 1, so 1 = worn and the earlier 0 was "not worn"), full SBS set by the host:
+  Create answered, Start sent 10 s later answered, the first frame 0.5 s after Start, **exactly 4 frames again** (66.8 ms apart), then silence; Stop got no reply again.
+  So the burst is repeatable and is not the glasses falling asleep.
+- **The control server stayed alive this time:** after the unanswered Stop, the read-only getters were still answered (input mode 1, wearing state 1). The earlier
+  silence therefore needed more than a Start and an unanswered Stop; the second Start without a replug, or sleep, remain the candidates.
+- **The frames are normal pictures.** A host-started frame shows the desk and a monitor, at the same brightness as the anchor-mode frames. The frame headers have the same
+  structure as the anchor-mode ones: the only bytes that vary between frames are the timestamp and two small counters (packet offsets 263, 264 and 275), and nothing in
+  them looks like a mode or a flag.
+- **The frame header declares the size:** little-endian u32 **504** at packet offset 11, u32 **378** at offset 15 and u16 **512** (the row stride) at offset 19. After a
+  320-byte header the payload is 512 x 378 = 193,536 bytes, which is exactly the rest of the packet. This agrees with the config's 504 x 378 and means the
+  "189 rows of 1024 bytes" reading is the same bytes re-chunked. Even and odd rows still differ strongly (the clean picture is the odd rows; the even rows look striped), so how
+  the two row sets relate is still open (task 1.2). It also revises the earlier note that the stream carries "every second sensor row": the frame holds all 378 rows, and
+  the clean picture uses half of them.
+- **Not found in the vendor service:** an acknowledgement or per-frame reply for camera frames. The frame id (10056) appears only in message-class registration code.
+  The `InitSet*` values the service passes still have to be recovered by tracing `ImpGrayCamera`'s virtual calls (its virtual table is at `0x2377d50` in `libnr_service.so`).
 
