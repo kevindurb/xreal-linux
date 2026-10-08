@@ -303,3 +303,210 @@ more fields on the wire than the two the parser handles, and whether the firmwar
 
 **No bytes were sent to the glasses.** Any experiment should start with a read-only request (`NRGlassesGetSWVersion` 10013,
 `NRGlassesGetStartupState` 10265), on one connection, with a short timeout, and with the wearer's go-ahead.
+
+## 8. Request and response layouts (protobuf field numbers)
+
+Recovered from each message class's serialiser (the code writes the field tag bytes explicitly, so field numbers and wire types are
+reliable; names and meanings are inferred from the request names). Notation: `{ 1: varint, 2: len }` = field 1 is a varint (int, enum or
+bool), field 2 is length-delimited (string, bytes or a sub-message), `fixed32` is a float or 32-bit integer. All responses carry
+**field 1 = result code** (0 = success, by convention; not verified). A packet is `msg_id` + length + `Base{ field 3 = request }`
+(response: `Base{ field 4 = response }`, section 6). Layouts come from the ControlGlasses 3.0.0 client library (the 3.1.0 one stores its type
+names differently and was not re-run); they are unlikely to have changed for these basic requests, but this is unchecked. For the
+`Start`/`Stop` requests (inferred ids) the layout is taken from their own classes.
+
+| Id | Request | Request body | Response body |
+|---|---|---|---|
+| 10003 | NRPowerSaveIsEnable | {} | { 1: varint, 2: varint } |
+| 10004 | NRPowerSaveSetEnable | { 1: varint } | { 1: varint } |
+| 10005 | NRPowerSaveGetSleepTime | {} | { 1: varint, 2: varint } |
+| 10006 | NRPowerSaveSetSleepTime | { 1: varint } | { 1: varint } |
+| 10008 | NRProximityIsEnable | {} | { 1: varint, 2: varint } |
+| 10009 | NRProximitySetEnable | { 1: varint } | { 1: varint } |
+| 10010 | NRDisplayGetBrightnessLevelCount | {} | { 1: varint, 2: varint } |
+| 10011 | NRDisplayGetBrightnessLevel | {} | { 1: varint, 2: varint } |
+| 10012 | NRDisplaySetBrightnessLevel | { 1: varint } | { 1: varint } |
+| 10013 | NRGlassesGetSWVersion | {} | { 1: varint, 2: len } |
+| 10014 | NRGlassesSetSDKVersion | { 1: len } | { 1: varint } |
+| 10015 | NRGlassesGetConfig | {} | { 1: varint, 2: len } |
+| 10016 | NRGlassesGetSupportedDevices | {} | { 1: varint, 2: varint } |
+| 10017 | NRGlassesGetVsyncOffsetTime | {} | { 1: varint, 2: varint, 3: varint } |
+| 10018 | NRGlassesGetMagCalibrationData | {} | { 1: varint, 2: len } |
+| 10019 | NRGlassesSetMagCalibrationData | { 1: len } | { 1: varint } |
+| 10020 | NRGlassesStartEventsReport | { 1: varint } | { 1: varint } |
+| 10021 | NREcGetLevelCount | {} | { 1: varint, 2: varint } |
+| 10022 | NREcGetLevel | unknown | unknown |
+| 10023 | NREcSetLevel | unknown | unknown |
+| 10025 | NRGlassesGetID | {} | { 1: varint, 2: len } |
+| 10026 | NRGlassesGetSN | { 1: varint } | { 1: varint, 2: len, 3: len } |
+| 10027 | NRGlassesGetSystemVersion | {} | { 1: varint, 2: len } |
+| 10028 | NRGlassesGetHWVersion | {} | { 1: varint, 2: len } |
+| 10029 | NRGlassesGetDspVersion | {} | { 1: varint, 2: len } |
+| 10031 | NRVsyncStart | unknown | unknown |
+| 10032 | NRVsyncStop | unknown | unknown |
+| 10034 | NRRebootGlasses | {} | { 1: varint } |
+| 10035 | NRShutdownGlasses | {} | { 1: varint } |
+| 10036 | NRImuStart | unknown | unknown |
+| 10037 | NRImuStop | unknown | unknown |
+| 10039 | NRProximityGetFarThreshold | {} | { 1: varint, 2: varint } |
+| 10040 | NRProximitySetFarThreshold | { 1: varint } | { 1: varint } |
+| 10041 | NRProximityGetNearThreshold | {} | { 1: varint, 2: varint } |
+| 10042 | NRProximitySetNearThreshold | { 1: varint } | { 1: varint } |
+| 10043 | NRProximityGetValue | {} | { 1: varint, 2: varint } |
+| 10044 | NRProximityGetWearingState | {} | { 1: varint, 2: varint } |
+| 10047 | NRGrayscaleCameraCreate | {} | { 1: varint } |
+| 10048 | NRGrayscaleCameraInitSetPixelFormat | { 1: varint } | { 1: varint } |
+| 10049 | NRGrayscaleCameraInitSetImageResolution | { 1: varint } | { 1: varint } |
+| 10050 | NRGrayscaleCameraInitSetAutoExposureType | { 1: varint } | { 1: varint } |
+| 10051 | NRGrayscaleCameraInitSetExposureTime | { 1: varint } | { 1: varint } |
+| 10052 | NRGrayscaleCameraInitSetGain | { 1: fixed32 } | { 1: varint } |
+| 10053 (inferred) | NRGrayscaleCameraStart | {} | { 1: varint } |
+| 10054 (inferred) | NRGrayscaleCameraStop | {} | { 1: varint } |
+| 10057 | NRLedSetEnable | { 1: varint, 2: varint } | { 1: varint } |
+| 10058 | NRLedGetEnable | { 1: varint } | { 1: varint, 2: varint } |
+| 10059 | NRDisplayGetLuminanceMaxValue | {} | { 1: varint, 2: varint } |
+| 10060 | NRDisplayGetLuminanceMinValue | {} | { 1: varint, 2: varint } |
+| 10061 | NRDisplayGetLuminanceValue | {} | { 1: varint, 2: varint } |
+| 10062 | NRDisplaySetLuminanceValue | { 1: varint } | { 1: varint } |
+| 10063 | NRDisplayGetDutyMaxValue | {} | { 1: varint, 2: varint } |
+| 10064 | NRDisplayGetDutyMinValue | {} | { 1: varint, 2: varint } |
+| 10065 | NRDisplayGetDutyValue | {} | { 1: varint, 2: varint } |
+| 10066 | NRDisplaySetDutyValue | { 1: varint } | { 1: varint } |
+| 10067 | NRDisplaySetScreenEnable | { 1: varint, 2: varint } | { 1: varint } |
+| 10068 | NRDisplayGetScreenEnable | {} | { 1: varint, 2: varint } |
+| 10069 | NRDisplayGetColorTemperature | { 1: varint } | { 1: varint, 2: varint, 3: varint } |
+| 10070 | NRDisplaySetColorTemperature | { 1: varint, 2: varint, 3: varint } | { 1: varint } |
+| 10071 | NRDisplayGetCurrentResolution | {} | { 1: varint, 2: varint } |
+| 10072 | NRDisplaySetCurrentResolution | { 1: varint } | { 1: varint } |
+| 10073 | NRDisplayGetDefaultResolution | {} | { 1: varint, 2: varint } |
+| 10074 | NRDisplaySetDefaultResolution | { 1: varint } | { 1: varint } |
+| 10075 | NRDisplayGetColorCalibrationType | {} | { 1: varint, 2: varint } |
+| 10076 | NRDisplaySetColorCalibrationType | { 1: varint } | { 1: varint } |
+| 10078 | NRDpGetCurrentEdid | {} | { 1: varint, 2: varint } |
+| 10079 | NRDpSetCurrentEdid | { 1: varint } | { 1: varint } |
+| 10080 | NRDpGetCurrentResolution | {} | { 1: varint } |
+| 10081 | NRDpGetDefaultEdid | {} | { 1: varint, 2: varint } |
+| 10082 | NRDpSetDefaultEdid | { 1: varint } | { 1: varint } |
+| 10083 | NRDpSetHDCPEnable | { 1: varint } | { 1: varint } |
+| 10084 | NRDpSetWorkingMode | { 1: varint } | { 1: varint } |
+| 10085 | NRDpGetWorkingState | {} | { 1: varint, 2: varint } |
+| 10087 | NRPowerSaveEnter | {} | { 1: varint } |
+| 10089 | NRAudioInStart | {} | { 1: varint } |
+| 10090 | NRAudioInStop | unknown | unknown |
+| 10091 | NRAudioGetCurrentMode | {} | { 1: varint, 2: varint } |
+| 10092 | NRAudioSetCurrentMode | { 1: varint } | { 1: varint } |
+| 10093 | NRAudioGetDefaultMode | {} | { 1: varint, 2: varint } |
+| 10094 | NRAudioSetDefaultMode | { 1: varint } | { 1: varint } |
+| 10095 | NRAudioIncreaseUacVolume | {} | { 1: varint } |
+| 10096 | NRAudioDecreaseUacVolume | {} | { 1: varint } |
+| 10097 | NRAudioGetVolumeMaxValue | {} | { 1: varint, 2: varint } |
+| 10098 | NRAudioGetVolumeMinValue | {} | { 1: varint, 2: varint } |
+| 10099 | NRAudioGetVolumeValue | {} | { 1: varint, 2: varint } |
+| 10100 | NRAudioSetVolumeValue | { 1: varint } | { 1: varint } |
+| 10101 | NRAudioGetAlgorithm | {} | { 1: varint, 2: varint } |
+| 10102 | NRAudioSetAlgorithm | { 1: varint } | { 1: varint } |
+| 10103 | NRAudioGetPAEnable | { 1: varint } | { 1: varint, 2: varint } |
+| 10104 | NRAudioSetPAEnable | { 1: varint, 2: varint } | { 1: varint } |
+| 10107 | NRRgbCameraInitSetAutoExposureType | { 1: varint } | { 1: varint } |
+| 10108 | NRRgbCameraInitSetExposureTime | { 1: varint } | { 1: varint } |
+| 10109 | NRRgbCameraInitSetGain | { 1: fixed32 } | { 1: varint } |
+| 10110 | NRRgbCameraCreate | {} | { 1: varint } |
+| 10111 | NRRgbCameraInitSetPixelFormat | { 1: varint } | { 1: varint } |
+| 10112 | NRRgbCameraInitSetImageResolution | { 1: varint } | { 1: varint } |
+| 10113 (inferred) | NRRgbCameraStart | {} | { 1: varint } |
+| 10114 (inferred) | NRRgbCameraStop | {} | { 1: varint } |
+| 10115 | NRRgbCameraRelease | {} | { 1: varint } |
+| 10116 | NRRgbCameraGetPluginState | {} | { 1: varint, 2: varint } |
+| 10119 | NREcGetValue | unknown | unknown |
+| 10120 | NREcSetValue | unknown | unknown |
+| 10121 | NRTemperatureGetValue | { 1: varint } | { 1: varint, 2: fixed32 } |
+| 10149 | NRAudioPlay | unknown | unknown |
+| 10211 | NRAudioGetPAForceSilent | { 1: varint } | { 1: varint, 2: varint } |
+| 10212 | NRAudioSetPAForceSilent | { 1: varint, 2: varint } | { 1: varint } |
+| 10215 | NRAudioGetPAForceSound | { 1: varint } | { 1: varint, 2: varint } |
+| 10216 | NRAudioSetPAForceSound | { 1: varint, 2: varint } | { 1: varint } |
+| 10217 | NRMiscSetScheduler | { 1: varint, 2: varint, 3: varint } | { 1: varint } |
+| 10218 | NRAudioGetVolumePercentage | {} | { 1: varint, 2: varint } |
+| 10219 | NRAudioSetVolumePercentage | { 1: varint } | { 1: varint } |
+| 10220 | NRDisplayGetColorTemperatureBaseline | { 1: varint, 2: varint, 3: varint, 4: varint } | { 1: varint, 2: varint, 3: varint } |
+| 10221 | NRDisplaySetGammaEnable | { 1: varint } | { 1: varint } |
+| 10222 | NRGlassesGetBootCount | {} | { 1: varint, 2: varint } |
+| 10223 | NRRgbCameraInitSetCompression | { 1: varint } | { 1: varint } |
+| 10224 | NRDisplaySetScreenEnableBsp | { 1: varint } | { 1: varint } |
+| 10225 | NRDisplayGetScreenEnableBsp | {} | { 1: varint, 2: varint } |
+| 10226 | NRDpGetCurrentEdidBsp | {} | { 1: varint, 2: varint } |
+| 10227 | NRDpSetCurrentEdidBsp | { 1: varint } | { 1: varint } |
+| 10228 | NRDpGetCurrentResolutionBsp | {} | { 1: varint } |
+| 10229 | NRGlassesGetSystemVersionCode | {} | { 1: varint, 2: len } |
+| 10230 | NRGlassesGetProductName | {} | { 1: varint, 2: len } |
+| 10231 | NRStorageGetAvailable | {} | { 1: varint, 2: varint } |
+| 10232 | NRStorageGetTotalSize | {} | { 1: varint, 2: varint } |
+| 10233 | NRStorageGetFreeSize | {} | { 1: varint, 2: varint } |
+| 10234 | NRStorageClearAll | {} | { 1: varint } |
+| 10235 | NRStorageSetFormat | {} | { 1: varint } |
+| 10236 | NRStorageSetMode | { 1: varint } | { 1: varint } |
+| 10237 | NRStorageGetMode | {} | { 1: varint, 2: varint } |
+| 10238 | NRGlassesGetUsbVid | {} | { 1: varint, 2: len } |
+| 10239 | NRGlassesGetUsbPid | {} | { 1: varint, 2: len } |
+| 10240 | NRMiscGetDeviceType | {} | { 1: varint, 2: varint } |
+| 10241 | NRRgbCameraGetSN | {} | { 1: varint, 2: len, 3: len } |
+| 10243 | NRRgbCameraGetConfig | {} | { 1: varint, 2: len } |
+| 10244 | NRRgbCameraSetConfig | { 1: len } | { 1: varint } |
+| 10245 | NRPowerSaveGetSleepTimeLevelCount | {} | { 1: varint, 2: varint } |
+| 10246 | NRPowerSaveGetSleepTimeLevel | {} | { 1: varint, 2: varint } |
+| 10247 | NRPowerSaveSetSleepTimeLevel | { 1: varint } | { 1: varint } |
+| 10249 | NRDpGetDataInterruptEnable | {} | { 1: varint, 2: varint } |
+| 10250 | NRDpSetDataInterruptEnable | { 1: varint } | { 1: varint } |
+| 10253 | NRDpGetDataTransmitMode | {} | { 1: varint, 2: varint } |
+| 10254 | NRDpSetDataTransmitMode | { 1: varint } | { 1: varint } |
+| 10255 | NRDpGetCurrentEdidAndAudioBsp | {} | { 1: varint, 2: varint, 3: varint } |
+| 10256 | NRDpSetCurrentEdidAndAudioBsp | { 1: varint, 2: varint } | { 1: varint } |
+| 10257 | NRAudioGetVolumeThousandth | {} | { 1: varint, 2: varint } |
+| 10258 | NRAudioSetVolumeThousandth | { 1: varint } | { 1: varint } |
+| 10259 | NRMiscGetSystemUpgradeState | {} | { 1: varint, 2: varint } |
+| 10260 | NRAudioGetHostForceSilent | { 1: varint } | { 1: varint, 2: varint } |
+| 10261 | NRAudioSetHostForceSilent | { 1: varint, 2: varint } | { 1: varint } |
+| 10263 | NRGlassesGetSNCode | { 1: varint } | { 1: varint, 2: len } |
+| 10264 | NRGlassesGetSNValue | { 1: varint } | { 1: varint, 2: len } |
+| 10265 | NRGlassesGetStartupState | {} | { 1: varint, 2: varint } |
+| 10266 | NRMiscGetHostType | {} | { 1: varint, 2: varint } |
+| 10267 | NRSetGlassesCpuFrequencyMode | { 1: varint } | { 1: varint } |
+| 10268 | NRGetGlassesCpuFrequencyMode | {} | { 1: varint, 2: varint } |
+| 10269 | NRGlassesStopEventsReport | { 1: varint } | { 1: varint } |
+| 10270 | NRDisplayGetColorTemperatureLevelCount | {} | { 1: varint, 2: varint } |
+| 10271 | NRDisplayGetColorTemperatureLevel | {} | { 1: varint, 2: varint } |
+| 10272 | NRDisplaySetColorTemperatureLevel | { 1: varint } | { 1: varint } |
+| 10273 | NRDpGetInputMode | {} | { 1: varint, 2: varint } |
+| 10274 | NRDpSetInputMode | { 1: varint } | { 1: varint } |
+| 10275 | NRTemperatureGetStateProcessEnable | { 1: varint } | { 1: varint, 2: varint } |
+| 10276 | NRTemperatureSetStateProcessEnable | { 1: varint, 2: varint } | { 1: varint } |
+| 10277 | NRGlassesGetUltraWideEnable | {} | { 1: varint, 2: varint } |
+| 10278 | NRGlassesSetUltraWideEnable | { 1: varint } | { 1: varint } |
+| 10279 | NRGlassesRecenter | {} | { 1: varint } |
+| 10280 | NRGlassesSetNetLogEnable | { 1: varint } | { 1: varint } |
+| 10281 | NRGlassesSetSceneMode | { 1: varint } | { 1: varint } |
+| 10282 | NRRgbCameraGetSNValue | {} | { 1: varint, 2: len } |
+| 10283 | NRRgbCameraGetSNCode | {} | { 1: varint, 2: len } |
+| 10284 | NRGlassesSetSpaceMode | { 1: varint } | { 1: varint } |
+| 10285 | NRDpGetDataFilterModeBsp | {} | { 1: varint, 2: varint } |
+| 10286 | NRDpSetDataFilterModeBsp | { 1: varint } | { 1: varint } |
+| 10287 | NRDpGetDataFilterMode | {} | { 1: varint, 2: varint } |
+| 10288 | NRDpSetDataFilterMode | { 1: varint } | { 1: varint } |
+| 10289 | NRDpGetDataFilterModeCount | {} | { 1: varint, 2: varint } |
+| 10290 | NRDisplayGetCallbackEnable | {} | { 1: varint, 2: varint } |
+| 10291 | NRDisplaySetCallbackEnable | { 1: varint } | { 1: varint } |
+| 10292 | NRUsbSetNetworkEnable | { 1: varint } | { 1: varint } |
+| 10293 | NRUsbGetNetworkEnable | {} | { 1: varint, 2: varint } |
+| 10295 | NRImuStartExt | unknown | unknown |
+| 10296 | NRImuStopExt | unknown | unknown |
+| 10297 | NRImuSetFrequencyExt | { 1: varint } | { 1: varint } |
+
+12 requests could not be read this way (the IMU and vsync start/stop families use different type names).
+
+Notable ones for the 6DoF question (all layouts above, none sent):
+- `NRGrayscaleCameraCreate` {} -> `{ 1: result }`; then `InitSetPixelFormat` `{ 1: varint }`, `InitSetImageResolution` `{ 1: varint }`,
+  `InitSetAutoExposureType` `{ 1: varint }`, `InitSetExposureTime` `{ 1: varint }`, `InitSetGain` `{ 1: fixed32 }`; then
+  `NRGrayscaleCameraStart` `{}`. The enum values (pixel format, resolution, exposure type) are not recovered.
+- `NRGlassesGetSWVersion` (10013): request `{}`, response `{ 1: result, 2: string }`: the safest first request (read-only).
+- `NRGlassesGetStartupState` (10265): request `{}`, response `{ 1: result, 2: varint state }`.
+- `NRGlassesSetSpaceMode` (10284) and `SetSceneMode` (10281): `{ 1: varint }` (the mode value meanings are unknown).
+- `NRUsbSetNetworkEnable` (10292): `{ 1: varint }`.
