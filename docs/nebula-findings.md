@@ -20,13 +20,14 @@ The APK and its extracted files are not in the repo; only facts are recorded her
   (section 8), that bundles `libnr_api.so`, `libnr_service.so`, `libnr_glasses_api.so` (the newer, One-aware version),
   `libnr_external_sensor.so`, `libnr_dual_agent_tracking.so`, `libnr_rgb_camera.so` and more. Most of the message
   information below section 8 comes from there.
-- **The camera start is an RPC, and it is in the runtime (section 10).** `libnr_api.so` / `libnr_service.so` contain a
-  protobuf-lite request/response layer to the glasses with 183 named requests, including `NRGrayscaleCameraCreate`,
-  `NRGrayscaleCameraInitSet{AutoExposureType,ExposureTime,Gain,ImageResolution,PixelFormat}`, `NRGrayscaleCameraStart`/`Stop`,
-  `NRImuStart`/`Stop`/`StartExt`/`SetFrequencyExt`, `NRVsyncStart`/`Stop`, `NRUsbSetNetworkEnable`, and the mode requests
-  `NRGlassesSetSpaceMode` / `SetSceneMode`. The runtime talks to the glasses over **USB** (libusb), not over the TCP ports
-  52990-52999. The glasses' HID interface 0 (two 1024-byte interrupt endpoints) is the likely carrier. The request
-  framing and the protobuf field layouts are **not recovered yet**, so no request can be sent yet.
+- **The SDK has named camera, IMU and vsync start/stop requests (section 10), but they may be app-to-service calls, not what
+  the glasses receive.** `libnr_api.so` / `libnr_service.so` contain a protobuf-lite request/response layer with 183 named
+  requests, including `NRGrayscaleCameraCreate`, `NRGrayscaleCameraInitSet*`, `NRGrayscaleCameraStart`/`Stop`,
+  `NRImuStart`/`Stop`, `NRVsyncStart`/`Stop`, `NRUsbSetNetworkEnable`, `NRGlassesSetSpaceMode`/`SetSceneMode`. Tracing one
+  wrapper (section 10.6) shows it only looks a function up by id and calls it, and Nebula's code has an IPC pair
+  (`IConnection.sendRecvMessage(int, byte[])`), so these protobuf messages are probably the SDK-to-service channel. What the
+  service then sends to the glasses, and over which USB interface or port, is **not established**. Neither the framing nor the
+  protobuf fields are recovered, so no request can be built yet.
 - The app has an explicit tracking-mode switch (**6DoF / 3DoF / 0DoF / 0DoF stable**) and a "SLAM mode" setting, and the SDK
   has grayscale-camera and RGB-camera APIs. That fits the camera being started by a tracking-mode request rather than by
   anchor mode as such (**inferred**).
@@ -484,7 +485,7 @@ The grayscale-camera, IMU and vsync start/stop requests have the same names as t
 `NRGrayscaleCameraStart` request would explain (**inferred**). The glasses themselves start the camera for their own anchor
 mode, which is consistent with the stream appearing there.
 
-### 10.3 The transport is USB, not the TCP ports
+### 10.3 The SDK side uses USB, not the TCP ports
 
 `libnr_api.so` and `libnr_service.so` import libusb (`libusb_claim_interface`, `libusb_interrupt_transfer`,
 `libusb_control_transfer`, `libusb_detach_kernel_driver`, ...) and are linked against `libnr_libusb.so`; no TCP port in
@@ -528,3 +529,264 @@ interface 0 or 8 has not been checked.
 - A phone-to-glasses USB capture while Nebula starts and stops tracking would give both for free.
 - Sending any request, even a read-only one, to the glasses is a new kind of action for this project (nothing has been sent so
   far) and needs explicit approval first.
+
+### 10.6 One wrapper traced (`libnr_api.so`, stripped; offsets are virtual addresses)
+
+The code that logs `[{}] Call NRGrayscaleCameraInitSetExposureTime start, time={}` is at `0x147a060` (found by cross-referencing the
+log string; note the literal starts at `[{}] `). Its behaviour (**read** from the disassembly):
+
+1. It calls a lookup `0x1482134(0x33)` and keeps the returned pointer. `0x33` (51) is the id of this API function in a registry.
+2. If the lookup returns null it logs "not found" and returns an error.
+3. It takes a timestamp (`clock_gettime`, nanoseconds), converts the exposure time to float (divides by 1000 when
+   formatting for the log) and logs the "start" line.
+4. It calls the looked-up function pointer with the argument (`blr x19`), stores the integer result and logs the "end" line
+   with the result code.
+
+So this shim is an interface-table dispatcher: the `NR*` names are API functions registered by id, and it is the registered
+function (not this shim) that does the work. The `Base/Req/Rsp` protobuf types and the `HandleRpcResponse/Timeout` handlers
+belong to the layer behind that function. Evidence that this layer is app-to-service IPC rather than the glasses wire format
+(**inferred**): the Java side of Nebula and ControlGlasses has `ai.nreal.framework.net.binder.IConnection` with
+`sendRecvMessage(int, byte[])`, `sendRecvFd(int, ParcelFileDescriptor, byte[])` and `sendRecvClose(int)`, and
+`IConnectorOrAcceptor.connectOrAccept(byte[], int, IConnection, ...)`, i.e. a connection object that carries an integer message
+id and a byte payload. The id would be the request type and the payload the protobuf.
+
+What this means for the camera question: the names show that the SDK has a way to start the grayscale camera, but they do not
+tell what bytes the glasses see or whether the One's firmware uses the same operations. Tracing further statically would need
+the registered functions for each id and the service-to-glasses code in `libnr_service.so`, which has no One-specific class
+names (its default device type is `NR_DEVICE_TYPE_AIR`); that is a long road for uncertain return.
+
+### 10.7 Recommended change of approach
+
+The One already speaks on its own network ports, and the camera starts when the glasses' own menu enters anchor mode. The
+most direct next steps are observations of the glasses themselves, which send nothing:
+
+1. Watch every TCP port 52990-52999 and the two HID interfaces passively while the wearer toggles anchor mode on the glasses.
+   Compare what changes on 52999 (events) and on the HID interrupt endpoints when the camera starts.
+2. Record that as a capture (the recorder already handles 52996-52998) so the messages around the camera start are on file.
+3. Only then decide whether a host request is worth trying, with the approval gate described in 10.5.
+
+## 11. XREAL SDK 3.1.0 (adds 6DoF on the One series with the Eye)
+
+**Source.** `docs.xreal.com/Release Note/XREAL SDK 3.1.0` says: "Adds support for 6DoF tracking on XREAL One series with XREAL Eye.
+Requires updating the glasses firmware to the latest version." Tested hosts: Beam Pro and Samsung S25. Firmware update: on Beam Pro
+via MyGlasses 1.11.0, or from a PC through the OTA website. The SDK 3.0.0 release note only says "support for XREAL Eye, an RGB
+camera accessory". So the section 8-10 analysis (ControlGlasses 1.1.0 = SDK 3.0.0) predates the One's 6DoF.
+**Consequence for us: whether the Eye streams, and how, may depend on the glasses' firmware version.** The firmware version of the
+glasses used here has not been recorded.
+
+Public downloads (`public-resource.xreal.com/download/`): `XREALSDK_Release_3.1.0.20251124/ControlGlasses-3.1.0.20251118115716-release.apk`
+(281 MB, examined) and `XREALSDK_Release_3.1.0.20251125/com.xreal.xr.tar.gz` (248 MB Unity package, not examined).
+
+### 11.1 What is new in the native libraries (read)
+
+- A new library, **`libnr_plugin_6dof.so`** (8 MB), containing the visual-inertial SLAM engine (source paths under
+  `slam_workspace/nrslam/vi-slam/...`), with `sdk-imu-driver.cpp`, camera models (`CameraModelAtan/Fisheye/Fisheye6202/Radial`), a
+  "single camera low performance" config and its own socket client (`socket() client fd is %d`). The SLAM code was split out of
+  `libnr_api.so` into a plugin.
+- `libnr_glasses_api.so` gains one glasses message: **`0xD6` (214) = `NRBSPGetProperty`** (`get property [%s], value [%s]`,
+  `invalid property key`), plus identifiers for new hardware (`GLASS_VIDDA*`, `CORE_PRO*`). It is a query; its key names were not
+  recovered. No other new glasses-layer message was found.
+- `libnr_api.so` / `libnr_service.so` gain a **TCP client named "XrealLink"** (source file
+  `.../xreal_link/tcp/xreal_link_tcp.h`, under `perception_3dof` and `dual_agent_tracking`). This is the first place in any SDK
+  analysed where the SDK talks to the glasses over TCP, which is the same transport as the One's streams on the Deck.
+
+### 11.2 XrealLink TCP (read, partly decoded)
+
+Log strings: `InitXrealLink host_ip:{} tcp_log:{}`, `{} sockfd:{} addr:{} port:{} in connectServer.`, `{} err:{} in connectServer.`,
+`in tcp collectThread. device_id:{} msg_id:{}`, `{} tcpIpSendMsg fail with connect server failed. return false to retry.`,
+`tcpip send fail. msg_len`, `tcpip recv fail. errno:`, `{} msg.size() <= 1 in tcpIpSendPacketMsg.`,
+`{} tcpIpSendMsg fail return true. reason: msg.size() <= packet_msg_header_length`, and the per-packet trace
+`{} packet_msg group_id:{} msg_id:{} packet_id:{} freq_count:{} header.timestamp_ns:{}`.
+
+What that gives:
+- The packet header carries **`group_id`, `msg_id`, `packet_id`, `freq_count` and a nanosecond `timestamp_ns`**, and the receive
+  thread dispatches on `device_id` and `msg_id`. The header length is a constant (`packet_msg_header_length`; value not recovered).
+  This is consistent with the headers seen on the One's streams (a fixed prefix starting `27 ..`/`28 ..`, a u64 nanosecond
+  timestamp at offset 14, and a counter), but the field-by-field mapping has **not** been done.
+- The client constructor (`libnr_service.so` virtual address `0x15f1864`) stores an `AF_INET` address from a dotted string passed in
+  and the port constant `0xA31F` in the `sockaddr_in` port field (stored little-endian, i.e. network-order bytes `1F A3`),
+  which is **TCP port 8099**. **Every construction passes the string `127.0.0.1`** (one function-local singleton, constructed at
+  eight inlined guard sites), so XrealLink connects to a server on **the same machine** at `127.0.0.1:8099`. It is the
+  SDK-client-to-local-service channel (it carries, for example, the IMU the service forwards to the app: "ImuTracking NotifyData"),
+  **not** a protocol spoken to the glasses. The `169.254.1.10` string seen near the init code belongs to a separate calibration
+  interface setting.
+- A `tcp_log` flag exists (the second constructor argument, bit 0), i.e. packet logging can be switched on.
+- No 5299x port number appears in 3.1.0 either, as an immediate or as a data table (checked by encoding, validated on the OTA port
+  50180). The streams we read on 52996-52999 may therefore be a separate service on the glasses, or 8099 may be where a request
+  channel lives and the stream ports are announced.
+
+### 11.3 What this changes
+
+1. XrealLink is local IPC, so the SDK's glasses-facing transport is still the USB path of section 10.3 (libusb to the glasses'
+   HID/bulk interfaces); no TCP code that targets the glasses' link-local addresses or the ports 52990-52999 exists in 3.1.0.
+2. The MCU message table (`0x20210601`) is unchanged in 3.1.0 except for one added message, `MSG_W_EC_VALUE` (0xB4,
+   electrochromic value). The glasses-layer sender table gains only `0xD6` (GetProperty). **No new message in any
+   glasses-facing table starts a camera.** The One's Eye support in 3.1.0 therefore rides on something not in those tables:
+   the One's on-glasses SoC runs an application ("pilot", firmware `pilot_1.3.1...` is bundled for Gina), and the camera, IMU and
+   vsync services/streams are most likely requests to that application (the `NRGrayscaleCameraCreate/Start` RPC names of section 10),
+   carried over a channel not decoded here.
+3. The One's streams on 52996-52998 are served by that on-glasses application. How the vendor SDK reaches it was not found
+   statically (the property API `NRBSPGetProperty`, 0xD6, is a candidate for how addresses or ports are learned).
+
+### 11.4 Still unknown
+
+- The values of `group_id`/`msg_id` for camera start/stop, and the protobuf (or other) payloads.
+- Which side is the TCP server at port 8099.
+- The header length and byte layout, and how `packet_id`, `freq_count` and `device_id` are used.
+- Whether the idle Eye on the Deck is due to old firmware, the lack of a start message, or the Follow-mode/Stabilizer settings.
+
+### 11.5 Probe result: port 8099 on the glasses (explained)
+
+On the Deck, with the glasses connected (latest firmware, per the wearer, Follow mode, camera stream idle), a plain TCP connect
+(nothing sent) to `169.254.1.1:8099` and `169.254.2.1:8099` was **refused immediately** on both (`ECONNREFUSED`, 0.00 s). This is
+now explained: the SDK's XrealLink target is `127.0.0.1:8099` (section 11.2), a local service port, not a glasses port. The probe
+therefore says nothing against the glasses' own services.
+
+### 11.6 Where static analysis stands
+
+Static reading of the Android SDK (3.0.0 and 3.1.0) has produced the full message vocabulary of its glasses layers and shown that
+the camera start is not any message in them. Further static work would have to follow the service's USB code into the
+on-glasses application protocol (the "pilot" / RPC layer) with no symbols, which is costly. The efficient way forward is
+dynamic: observe what the glasses do when their own menu starts the camera (anchor mode) and what a host that starts it
+sends. Options: (a) passive capture on the Deck of the known ports while the wearer toggles anchor mode; (b) a USB capture of an
+Android phone running Nebula/MyGlasses with the glasses (this shows the vendor's own start sequence); (c) enumerating the
+other listeners on the glasses (52990-52995, which accepted connections and stayed silent) with a careful, approved probe.
+
+### 11.7 What listens on 127.0.0.1:8099
+
+XREAL's own documentation (`docs.xreal.com/Tools/ControlGlasses`, SDK 3.1.0) describes the architecture: **ControlGlasses is the server
+and AR applications are clients**; at run time an app "communicates with ControlGlasses to access algorithm libraries, manage glasses
+status, enable 3D mode and other system services", and the app loads its algorithm libraries dynamically from ControlGlasses
+(this is the Play dynamic-feature/"loader" mechanism of section 8). On Beam Pro the built-in **MyGlasses** app is the server instead
+(ControlGlasses is not installed there). A phone that has neither cannot run an SDK app.
+
+So the listener behind `127.0.0.1:8099` is, by that design, the **ControlGlasses (or MyGlasses) process** running on the same device as the
+AR app (**inferred** from the documentation and from the client being loopback-only; the listening code itself was not located:
+no native or Java code in ControlGlasses 3.1.0 binds the constant 8099, so the port is probably handed to the client at run time,
+for example through the Binder `ai.nreal.framework.net.binder.IConnectorOrAcceptor.connectOrAccept` call of section 10.6, or is
+set elsewhere). Consequence: on a non-Android host there is no such server, and an XREAL-compatible server would have to be
+reimplemented on the host to talk to the glasses the way the vendor's does; the glasses-facing half of it is the USB path of 10.3.
+
+### 11.8 Looking for the server's listener in `libnr_service.so` (3.1.0)
+
+Assumption tested: the port is passed in, so look at the server code for whatever listens.
+
+- **Java does not pass a port.** The server's start sequence (`NRServiceControl.startSdk`) is `nativeInitService(Context)`,
+  `nativeSetServiceMode(int)`, `nativeInitSetForegroundService(bool)`, `nativeStartService()`, then `nativeGlassesInit()`
+  (and, as separate JNI calls, `nativeGraycameraInit/DeInit/Pause/Resume` and `nativeImuInit/DeInit/Pause/Resume`). No call
+  carries a port number; `nativeSetServiceMode` takes only a mode integer. The same library also exports `nativeSetClientMode`, so one
+  library implements both ends.
+- **No dedicated XrealLink listener was found.** The only places in `libnr_service.so` that call `bind`/`listen`/`accept` are five
+  generic helpers (`0x1cfe4f8`, `0x1d0e5cc`, `0x1d13028`, `0x1d1fbf8`, `0x203876c`), each doing bind -> listen -> getsockname with a
+  caller-supplied address (error text `Error in bind for address '`), called only from other generic code at `0x1d0b..0x1d1f` and
+  `0x2023..0x2025`. None builds `127.0.0.1` or 8099, and the library contains gRPC (its listeners are among these). No Java
+  `ServerSocket`/`ServerSocketChannel` exists either.
+- **The Android transport is Binder.** The same library has a Binder-based network framework (`com.xreal.framework.net.binder.Acceptor`,
+  `Connector`, `Connection`, with natives such as `nativeGetAcceptorHandle`, `nativePostNewConnection`, `nativeOnMessage`,
+  `nativeOnFd`), and the Java side exposes `IConnectorOrAcceptor.connectOrAccept`. The loopback TCP client at port 8099 is
+  therefore best read as the cross-process/non-Binder variant of the same client-to-service link; its server was **not** located.
+- **The camera is started inside the server.** `nativeGraycameraInit()` and `nativeImuInit()` run in the service process (JNI
+  `Java_com_xreal_glasses_api_Startup_nativeGraycameraInit` at `0xbe0664`, which calls an init routine at `0xbe0840` into the
+  device layer), so camera and IMU bring-up are server-side, matching the documented client/server split.
+
+Remaining path to the glasses-facing half: follow `0xbe0840` (camera) and the IMU/glasses equivalents down to the device layer and
+the USB code. That is where the actual request to the glasses is made.
+
+### 11.9 Device layer inside the service (`libnr_service.so`, RTTI class names)
+
+Following `nativeGraycameraInit` (JNI `0xbe0664` -> init routine `0xbe0840`) shows a lifecycle wrapper: it checks a readiness
+function (`0x204221c`), then calls four stage functions in order (`0x2044940`, `0x2042784`, `0x2046c44`, `0x2044cec`), each of which
+logs entry/exit, takes a trace/lock helper (`0x2041db0`) and does its work through a virtual call. The concrete classes behind
+those virtual calls are visible from the RTTI strings (names only; the mapping from stage to class was not traced):
+
+| Area | Classes |
+|---|---|
+| Camera (API object and implementation) | `GrayCamera`, `ImpGrayCamera` (singleton), driver interface `DriverInterface<NRGrayscaleCameraInterface>` |
+| Camera drivers | `CameraDriver` (base), `CameraUvc`, `CameraV4l2`, `CameraQvr`, `CameraOv580`, `CameraForFlora`, `CameraOffline` |
+| Camera protocol | `CamProtocol`, `CamProtocol_Generic_Ov580`, `CamProtocol_Offline`, `Ov580TimeAlign` (camera/IMU time alignment), `ConfigFlashIO_Ov580` |
+| IMU | `ImpImu` (singleton), `ImuDriver`, `ImuDriverXreal`, `ImuDriverQvr`, `ImuOffline`; protocols `ImuCtlProtocol`, `_Flora`, `_Haley`, `_Ov580`; data protocols `ImuDataProtocol`, `_Flora_Generic`, `_Haley_Generic`, `_Generic_Ov580`, `_Offline`; factories `ImuProtocolFloraFactory`, `ImuProtocolHaleyFactory`, `ImuProtocolOv580Factory`, `ImuProtocolFactory` |
+| Vsync | `ImpVsync` (singleton), `VsyncDriver`, `MessageStrControlPropertyVsync`, `MessageBinControlPropertyVsyncEvent` |
+| MCU / glasses config / HID | `McuProtocolManager`, `McuDriver`, `ImpGlassesConfig`, `ConfigIOBase`, `ConfigHidIO`, `HidDriver`, `HidapiDriver`, `HidrawDriver`, driver interfaces for `NRImuInterface`, `NRMcuInterface`, `NRVsyncInterface`, `NRGlassesConfigInterface` |
+| Messages (string and binary control properties) | `MessageStrControlPropertyPsensor`, `...DeviceList`, `...ActivationTime`, `MessageBinControlPropertyPsensor`, `...GlassesDisplayStatus`, `MessageStrReadGlassesDisplayStatus`, `MessageBinControlPropertyKeyEvent` |
+
+Observations (**inferred** from names):
+- There is no class named for Gina/One or Eye. The camera back-ends are UVC, V4L2, Qualcomm (Qvr), OV580 and **`CameraForFlora`**,
+  which receives frames through a `GenericShmWrapper` callback (frames handed over as shared memory). The One's Eye is probably
+  served by one of these (likely the Flora path, since the One's firmware also ships as Flora/Gina images), but which was not determined.
+- The IMU has Flora and **Haley** control/data protocol classes; "haley_mode" appears in the MCU message table of section 8.1, so
+  Haley is probably the newer glasses family's MCU/IMU protocol.
+- The IMU and camera data protocols are JSON-descriptor driven (section 8.1): the byte layout of frames is described by embedded
+  JSON, not hard-coded, for the OV580 variants. A Flora/Haley descriptor for the One was not among the six embedded descriptors, so
+  the One's frame layout lives in compiled code (`ImuDataProtocol_Haley_Generic`, `CameraForFlora`).
+
+Practical conclusion for the start-camera question: the vendor's camera start for these glasses is inside `CameraForFlora` /
+`ImpGrayCamera` and the HID/MCU message path (`McuProtocolManager`, `ConfigHidIO`), not in a table that can be read off strings.
+Finding the exact message needs either tracing those classes' virtual methods (symbol-less) or observing the traffic of a working
+host (Nebula/MyGlasses with the glasses).
+
+### 11.10 How a control call travels (traced for `nativeSetGlassesSpaceMode`)
+
+`com.xreal.glasses.api.Control` has 169 JNI natives in `libnr_service.so` (names in `docs/nebula-jni-control-names.txt`), among them
+`nativeSetGlassesSpaceMode`, `nativeSetGlassesSceneMode`, `nativeSetGlassesUltraWideEnable`, `nativeSet/GetRgbCameraState`,
+`nativeSet/GetVsyncState`, `nativeSetMagneticState`, `nativeSetIMUFrequencyDivider`, `nativeRecenterGlasses`, `nativeSetHostType`,
+`nativeSetHostID`, `nativeResetOv580`, `nativeGetImuInterruptCount`, `nativeStartGlassesEventsReport`.
+
+Reading `nativeSetGlassesSpaceMode` (virtual address `0xc000c4`) shows the path (**read** from the disassembly):
+
+1. A trace log line is written.
+2. The shim fetches the module **named `glasses_control`** from a module registry (helper `0xd2d720`, called with the literal
+   `glasses_control` and mode 1; the first byte `0x1e` in the stack buffer is the libc++ short-string length marker for 15 characters,
+   which also explains the `0x1e`/`0x10` constants seen in every shim; they are string-length markers, not operation ids).
+3. If the module is available it calls a **function pointer stored in a table** (at `0x2498440 + 0xa4`) through a common call
+   wrapper (`0xd8c9c0`) with the mode integer, and returns success if the result is 0.
+
+The library exports for the same functions exist in `libnr_loader.so` (`NRGlassesSetGlassesSpaceMode`, `NRGlassesSetGlassesSceneMode`,
+...) and `libnr_api.so` carries the strings `SetGlassesSpaceMode not find provider`, `Call NRGlassesSetSpaceMode start,
+space_mode={}`, `Handle NRGlassesSetSpaceMode, result={}`, `NRGlassesSetSpaceMode failed: no function!`. So the architecture is:
+JNI/API shim -> module registry -> "provider" module `glasses_control` -> its function table -> (RPC request/response handlers
+`NR...::HandleRpcRequest/Response/Timeout`) -> glasses. The provider module is the layer that finally builds the glasses message;
+it is **not** inside the code read so far.
+
+Consequences:
+- Parameters seen in logs: `space_mode={}` and `scene_mode={}` are single integers; their value meanings are not documented anywhere
+  found (the Unity side has `TrackingType` 6Dof/3Dof/0Dof/0DofStable, likely mapped onto `space_mode`/`scene_mode`; unverified).
+- A naming pattern worth testing later against live traffic: the grayscale camera, IMU and vsync "Create/Init/Start" functions
+  are looked up the same way (error text `NRGrayscaleCameraCreate failed: no NRGrayscaleCameraCreate function!`).
+- To learn the actual bytes, the provider module `glasses_control` must be located (it is registered at start-up; its code is
+  not one of the `libnr_*` libraries by name) or the traffic observed.
+
+### 11.11 Status after the offline pass
+
+Established: the full vocabulary of the SDK-to-service and service-to-glasses layers; the architecture (client libs -> loopback/Binder
+link -> service -> provider modules -> device drivers -> glasses); that the One's 6DoF needs firmware >= the SDK 3.1.0 era; that the
+transport to the glasses is USB (HID/bulk) with the older 0xFD/0xAA framing and the MCU message table of section 8; that there is no
+glasses-facing TCP code in the SDK. Not established: the exact message or sequence that makes the Eye stream. Static reading would
+now need the provider module and the driver classes' compiled methods; observing a working host is far cheaper.
+
+### 11.12 The `RGB_Power_Enable` / `RGB_Power_Disable` strings are inside an embedded firmware image
+
+The strings `RGB_Power_Enable`, `RGB_Power_Disable`, `Dp_Reset`, `Dp_Set`, `1_Open rgb success`, `0_Close rgb success`,
+`1_Already_Open rgb success`, `0_Already_Close rgb success` and `Glasses starting up num %d` (all in `libnr_glasses_api.so`) have **no
+code references from the library's own AArch64 code** (no `adrp`/`add` loads, no data relocations). The bytes around them
+are Thumb-2 (32-bit ARM Cortex-M style) instructions (for example `80 B5 88 B0` = `push {r7, lr}; sub sp, #0x20`) interleaved
+with the strings. They therefore belong to an **embedded firmware/boot image that the library uploads to the glasses** (the
+library also contains `usb_tool_romcode_2_upgrade`, `flora_rommode_upgrade`, `tzc400_init`, `ddr3_init_1600`, and a ~1 MB DDR
+initialisation blob), and the names look like entries of that image's own command table (a boot-stage shell). They are not part of
+the host API that a running glasses accept, and they say nothing about starting the Eye in normal operation.
+**Do not send, upload or replay any of this**; it is a firmware-update/bring-up path that can brick the glasses.
+
+Conclusion for the question "is there a host command that powers the camera?": in the host-visible layers (MCU message table,
+glasses-layer senders, JNI control surface, RPC names) the camera/RGB state appears only as getter/setter pairs
+(`nativeGet/SetRgbCameraState`, `NRGlassesGet/SetUltraWideEnable`, `NRGlassesSetSpaceMode`/`SceneMode`) whose wire encoding was not
+reached; the previous text protocol had `CMD_RW_RGB_SWITCH 0x68` (section 8.1) and the One's MCU table has no equivalent entry.
+
+### 11.13 The message-id map (see `docs/xreal-link-messages.md`)
+
+Resolving each `NR<Name>::HandleRpcRequest` handler to the message id registered with it (179 of 183 requests) gives the numbering of the
+service protocol: for example `NRGrayscaleCameraCreate` 10047 ... `InitSetGain` 10052, `NRImuStart`/`Stop` 10036/10037, `NRVsyncStart`/`Stop`
+10031/10032, `NRGlassesSetSpaceMode` 10284, `NRUsbSetNetworkEnable` 10292. **The One's stream packets use the same `msg_id` space**: the camera
+frames in `captures/cam_52997_sample.bin` start `27 48 00 02 f5 40`, i.e. big-endian `msg_id` 10056 and a big-endian length of
+193,856 (verified; frames sit at exact 193,862-byte steps). The IMU (`28 36`, 10294), vsync (`27 31`, 10033) and event (`27 8a`, 10122)
+magics fit the same rule and still need confirming on live data. This corrects section 11.3: the glasses themselves apparently
+speak the SDK message protocol on their TCP ports, so a host request such as `NRGrayscaleCameraStart` (inferred id 10053) is the most
+likely way to start the Eye. Which port accepts requests, the request header bytes 6-21 and the protobuf fields remain to be found.
