@@ -518,3 +518,21 @@ nine seconds, `NRGrayscaleCameraStart`.
   "1 = worn" is withdrawn. Nothing yet explains why the glasses drop back to 2D mode on their own.
 - **Next:** the `InitSet*` requests (values not known; trace them offline) and the SDK's own empty-body form `1a 00` are the remaining untried differences from the vendor sequence. Each hardware attempt costs a replug.
 
+
+### Empty-body requests, a repeated Start and Stop then Start do not sustain the camera (2026-10-08)
+
+Fresh replug (2D mode, no setter sent), one connection, camera requests with the SDK's empty body `1a 00`, each one approved before it was sent.
+
+| Step | Packet (txid) | Reply | Frames |
+|---|---|---|---|
+| Create 10047 | `273f00000006 80000003 1a00` | `22 00` | 0 |
+| Start 10053 (9 s later) | `274500000006 80000004 1a00` | `22 00` | **4**, first 0.5 s after Start, then silence |
+| second Start | `...80000005 1a00` | `22 00` in 4 ms | none |
+| Stop 10054 | `274600000006 80000007 1a00` | `22 00` in 3 ms | none |
+| Start after Stop | `...80000008 1a00` | `22 00` in 3 ms | none |
+
+- **`1a 00` bodies behave like `18 00` for Create and Start**: same replies, same 4-frame burst. Stop **is answered with `1a 00`** (`22 00`); the earlier Stops used `18 00` and got no reply.
+- **A second Start without a replug did not silence the control server** (a getter answered afterwards). The silence in session 2 had another cause; the withdrawn rule "never Start twice" was overcautious.
+- **The burst is once per replug in every variant tried**: Start, a repeated Start, and Stop then Start all answer success and send nothing more. The streams on 52996 stayed at 120/s throughout and the USB device did not change.
+- **The `InitSet*` values are not recoverable from ControlGlasses 3.1.0.** The service only registers and handles the requests (the registration code at `0x1b67a50` to `0x1b717f4` is static constructors; the wrappers' only callers are their own request handlers); `libnr_api.so` and `libnr_loader.so` only export the `NRGrayscaleCameraInitSet*Base` functions, and no other library or the dex files call them. The values are chosen by the SDK's callers (an app or tracking plugin), so they would have to come from a different package (for example the Nebula APK) or from the public SDK headers.
+- **Still untried:** Create again after a Stop, and the `InitSet*` requests between Create and Start.
