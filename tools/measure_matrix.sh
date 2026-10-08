@@ -21,8 +21,8 @@ for home in $HOMES; do
     restart steamvr.enableHomeApp=$home driver_xreal.hold_after_present=$hold $EXTRA
     for r in $(seq "$REPS"); do
       label="${TAG}home-$home-hold-$hold-r$r"
-      "$HERE/tools/measure_dashboard.sh" "$label" >/dev/null 2>&1
-      { echo "### $label"; grep -E "hold after|bad frames|refreshes; shift|steamvr-compositor-sync" "/tmp/measure-$label.txt" | tail -3; } >>"$RES"
+      "$HERE/tools/measure_dashboard.sh" "$label" "${FRAMES:-480}" >/dev/null 2>&1
+      { echo "### $label"; grep -E "hold after|gpu busy|new SteamVR|bad frames|refreshes; shift|steamvr-compositor-sync" "/tmp/measure-$label.txt" | tail -3; } >>"$RES"
     done
   done
 done

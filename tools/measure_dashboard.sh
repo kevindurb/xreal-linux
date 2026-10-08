@@ -17,9 +17,13 @@ rm -rf "$DUMP"; mkdir -p "$DUMP"; : >"$OUT"
 } >>"$OUT"
 if [ "${DASH:-1}" = 0 ]; then "$VRCMD" --hidedashboard >/dev/null 2>&1; else "$VRCMD" --showdashboard >/dev/null 2>&1; fi; sleep 4   # DASH=0: no dashboard, for judder
 XREAL_EXTRA_ARGS="--sim-pose --sim-yaw 40 --sim-pitch -30 --sim-pitch-amp 0 --dump $DUMP --dump-frames $FRAMES" "$HERE/tools/vr_session.sh" presenter >/dev/null
+GPU=$(ls /sys/class/drm/card*/device/gpu_busy_percent 2>/dev/null | head -1)
+( while :; do cat "$GPU" 2>/dev/null; sleep 0.2; done ) >"$DUMP.gpu" 2>/dev/null & SAMPLER=$!
 sleep 6; touch "$DUMP/trigger"   # the presenter captures the next FRAMES frames
 for _ in $(seq 120); do [ "$(ls "$DUMP"/*_R_*.rgba 2>/dev/null | wc -l)" -ge "$FRAMES" ] && break; sleep 1; done
 sleep 3
+kill "$SAMPLER" 2>/dev/null
+echo "gpu busy during capture: $(sort -n "$DUMP.gpu" | awk '{a[NR]=$1; s+=$1} END{printf "avg %.0f%%, p90 %d%%, max %d%%", s/NR, a[int(NR*0.9)], a[NR]}')" >>"$OUT"; rm -f "$DUMP.gpu"
 "$VRCMD" --stats 2>&1 | head -15 >>"$OUT"
 grep "new SteamVR frames" /tmp/presenter.log | tail -6 >>"$OUT"
 /usr/bin/podman run --rm -v "$DUMP":"$DUMP":ro,z -v "$HERE/tools":/tools:ro,z registry.fedoraproject.org/fedora:44 \
