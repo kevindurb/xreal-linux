@@ -257,3 +257,63 @@ With the glasses sitting still for 10 minutes while SteamVR Home ran at 1280x720
 - **Rotational reprojection** (presenter `--reproject`, shaders in `presenter/shaders`) runs on the Deck: the head pose SteamVR rendered
   each frame for (taken from the layer's `mHmdPose`) and our own fused pose agree to 0.00-0.04 degrees while the glasses are at rest, which
   confirms the pose conversion end to end. The visual result has not been checked yet.
+
+## Review of korejan/steamvr-compositor-sync (read before installing; commit 994577b, v0.1.0)
+
+- **What it is:** a Vulkan layer for SteamVR's `vrcompositor`. It adds its own timeline-semaphore signal to every queue submit and
+  makes the compositor wait before it begins, resets or frees a command buffer (or resets/destroys a descriptor pool) that the GPU may
+  still be executing (SteamVR-for-Linux #952). It is written for the freeze on NVIDIA; that it also removes our single bad frames is
+  the hypothesis being tested here, not a claim of the project.
+- **What it touches:** `getenv` for its own `STEAMVR_COMPOSITOR_SYNC_*` variables only. No network, no exec, no file reads or writes in
+  `src/`. It is inert unless the process is `vrcompositor` (or `STEAMVR_COMPOSITOR_SYNC_FORCE=1`).
+- **What the install writes:** three files under the prefix (default `~/.local`): `lib/libVkLayer_steamvr_compositor_sync.so`, an explicit
+  layer manifest, and an implicit `VK_LAYER_LUNARG_override` manifest whose `app_keys` name the registered `vrcompositor` path(s). The
+  script refuses to replace a file that is not its own and refuses to install when another override or a loader settings file would
+  conflict. `--uninstall` removes only those files.
+- **Surprises:** the override uses the loader's single per-application override slot, so it conflicts with vkconfig overrides; the
+  layer is built with static libstdc++ for the Steam runtime. It needs CMake 3.25+ and a C++20 compiler to build from source.
+
+## Dashboard bad frames and judder: what was measured (2026-10-07, Steam Deck, SteamVR 2.18.2)
+
+Method: `tools/measure_dashboard.sh` (dashboard open, `--sim-pose --sim-yaw 40 --sim-pitch -30 --sim-pitch-amp 0`, 480-frame `--dump`,
+`tools/find_bad_frames.py` in a container), driven by `tools/measure_matrix.sh` / `tools/measure_sweep.sh`. Two captures per cell.
+
+**Bad frames per 480-frame sweep, no layer, async off:**
+
+| | Home off | Home on |
+|---|---|---|
+| hold on (running start 2 ms) | 0, 0 | 1, 2 |
+| hold off | 11, 13 | 11, 10 |
+
+- **The hold hides the bad frames; nothing here fixes them at the source.** They are in SteamVR's own output, whatever we do.
+- **korejan/steamvr-compositor-sync does not remove them** (hold off: Home off 9, 5; Home on 6, 6). It loads in vrcompositor
+  from `~/.local` (the pressure-vessel container does not hide it; log line "active in vrcompositor"), but its summary shows only
+  descriptor-pool swaps and zero command-buffer waits, so it is not addressing this.
+- **`steamvr.enableLinuxVulkanAsync` does not remove them** (hold off, layer off: Home off 8, 6; Home on 12, 6; with the layer too:
+  7, 10 and 10, 6). SteamVR logs nothing about async, so whether it engages under driver direct mode is unknown.
+- **Our fence wait is not the cause.** `fence_pending` was set on 106 of 480 frames, so the exported write fences are real and we
+  wait on them (ALVR's direct-mode driver does the same). The bad frames do not line up with pending fences (3 of 13) or with frame age.
+- **A later running start removes them with the hold on** (Home on, 2 captures each, new driver setting `driver_xreal.running_start_ms`,
+  which moves both the declared vsync and the end of the `PostPresent` hold): 2 ms: 0, 1; 4 ms: 0, 1; 6 ms: 0, 2; **8, 10 and 12 ms: 0, 0**.
+  SteamVR's own rate with Home on is 47-55 new frames/s whatever the running start: Home is GPU-bound on the Deck.
+
+**Judder (what is displayed), `tools/judder_report.py`: horizontal image shift per refresh during a steady 40 deg/s turn, no dashboard,
+no reprojection.** Stalls are refreshes that moved under a third of the median, doubles moved over 1.65 times:
+
+| | Home off stalls / doubles | Home on stalls / doubles |
+|---|---|---|
+| hold on, running start 2 ms | 56% / 1% | 32% / 16% |
+| hold on, running start 8 ms | 45% / 20% | 22% / 20% |
+| hold off, running start 2 ms | 22% / 6% | 14% / 24% |
+| hold off, running start 8 ms | 18% / 3% | 13% / 15% |
+
+- **The hold is what makes motion judder** (about half the refreshes repeat an image with Home off), and a later running start does not
+  change that. Turning it off halves the stalls, but with Home on 15-24% of refreshes still double, from SteamVR's GPU-bound frame rate.
+- **Not yet measured:** the same matrix with `--reproject` (`tools/judder_matrix.sh`, results in `/tmp/judder-results.txt` on the Deck),
+  and the bad-frame count with the hold off and a later running start (the 8-12 ms result above is with the hold on).
+
+**Present wait** times out when the presenter starts before SteamVR and then never recovers on the newest present id, because while the
+fallback is active the queue runs up to the swapchain depth ahead of the display. The presenter now probes an id from 4 presents back every
+5 s, and present wait returns within seconds; frame age drops from about 16 ms max to about 1.4 ms once it does.
+
+**Build:** the driver must be linked with `-fno-math-errno` (now in `driver/build.sh`), otherwise a Fedora 44 build needs `sqrtf@GLIBC_2.43`.

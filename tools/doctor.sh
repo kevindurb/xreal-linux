@@ -59,6 +59,20 @@ print("  [info] " + f"per-eye render size: {d.get('render_width', 1920)}x{d.get(
 PY
 else warn "no steamvr.vrsettings yet (SteamVR has not been run)"; fi
 
+echo "Dashboard bad frames"
+# SteamVR's compositor can hand over a frame while it is still redrawing it. The compositor sync layer or Vulkan async avoids it.
+LAYER=""
+for d in "$HOME/.local/share/vulkan/implicit_layer.d" "$HOME/.config/vulkan/implicit_layer.d" /usr/share/vulkan/implicit_layer.d /etc/vulkan/implicit_layer.d; do
+  l=$(grep -il "compositor.sync\|compositor_sync" "$d"/*.json 2>/dev/null | head -1)
+  [ -n "$l" ] && { LAYER=$l; break; }
+done
+ASYNC=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("steamvr",{}).get("enableLinuxVulkanAsync", False))' "$CFG" 2>/dev/null)
+[ -n "$LAYER" ] && ok "compositor sync layer installed ($LAYER)"
+[ "$ASYNC" = True ] && ok "steamvr.enableLinuxVulkanAsync is on"
+if [ -z "$LAYER" ] && [ "$ASYNC" != True ]; then
+  warn "neither the compositor sync layer nor steamvr.enableLinuxVulkanAsync is active; the dashboard can show single bad frames (see docs/findings.md)"
+fi
+
 echo "Presenter"
 [ -x "$HERE/presenter/target/release/xreal-presenter" ] && ok "presenter built" || bad "presenter not built (see presenter/README.md)"
 systemctl --user is-active --quiet xreal-presenter 2>/dev/null && ok "presenter service running" || warn "presenter service not running (tools/vr_session.sh start)"

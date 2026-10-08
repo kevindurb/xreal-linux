@@ -287,6 +287,8 @@ struct Gfx {
     present_wait: Option<khr::present_wait::Device>, // None: vblank times are estimated from acquire instead
     present_id: u64,              // id of our last present, 0 when there is none to wait for
     present_wait_timeouts: u32,   // consecutive timeouts; the compositor may not report presentation
+    present_wait_active: bool,    // false: vblank is estimated from acquire, and present wait is retried at `present_wait_retry`
+    present_wait_retry: std::time::Instant,
     used_frame: Option<(RawFd, u32)>, // driver connection and SteamVR frame last reported as in use
     pub new_frames: u32,          // SteamVR frames shown for the first time since the last report
     pub new_frame_age_ms: (f32, f32), // sum and max of their age when picked up, since the last report
@@ -381,7 +383,7 @@ impl Gfx {
             swapchain: vk::SwapchainKHR::null(), images: vec![], views: vec![], format: vk::Format::B8G8R8A8_UNORM,
             extent: vk::Extent2D { width: 1, height: 1 }, pool, cmd, image_available, render_done: vec![], in_flight,
             mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, capture: None, capture_pending: None, fallbacks: 0, last_delta_deg: 0.0,
-            semaphore_fd, read_ready, present_wait, present_id: 0, present_wait_timeouts: 0, used_frame: None,
+            semaphore_fd, read_ready, present_wait, present_id: 0, present_wait_timeouts: 0, present_wait_active: true, present_wait_retry: std::time::Instant::now(), used_frame: None,
             new_frames: 0, new_frame_age_ms: (0.0, 0.0), last_render_q: None, render_steps_deg: vec![],
         };
         g.create_swapchain(window.inner_size())?;
@@ -884,17 +886,35 @@ impl Gfx {
         }
         // Waiting for our last frame to reach the display gives the vblank time and keeps only one frame queued.
         let mut vblank_ns = 0u64;
+        // After a fallback the wait is retried every 5 s with a short timeout: the compositor often reports presentation
+        // only once it is up, so a fallback at startup should not last for the whole session.
+        let probing = !self.present_wait_active && std::time::Instant::now() >= self.present_wait_retry;
         let waited = match (&self.present_wait, self.present_id) {
-            (Some(pw), id) if id > 0 => Some(pw.wait_for_present(self.swapchain, id, 50_000_000)),
+            // While the wait is off the queue runs up to the swapchain's depth ahead of the display, so a probe asks about a
+            // present from a few frames back: if that one reports, presentation feedback works.
+            (Some(pw), id) if id > 0 && (self.present_wait_active || probing) => {
+                if probing { Some(pw.wait_for_present(self.swapchain, id.saturating_sub(4).max(1), 20_000_000)) }
+                else { Some(pw.wait_for_present(self.swapchain, id, 50_000_000)) }
+            }
             _ => None,
         };
         match waited {
-            Some(Ok(())) => { vblank_ns = tracking::monotonic_ns(); self.present_wait_timeouts = 0; }
+            Some(Ok(())) => {
+                self.present_wait_timeouts = 0;
+                if self.present_wait_active { vblank_ns = tracking::monotonic_ns(); }
+                else {
+                    println!("present wait works again; using it for vblank times");
+                    self.present_wait_active = true;
+                }
+            }
             Some(Err(vk::Result::TIMEOUT)) => {
                 self.present_wait_timeouts += 1;
-                if self.present_wait_timeouts >= 3 {
-                    println!("present wait keeps timing out; estimating vblank from acquire instead");
-                    self.present_wait = None;
+                if probing {
+                    self.present_wait_retry = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                } else if self.present_wait_timeouts >= 3 {
+                    println!("present wait keeps timing out; estimating vblank from acquire instead (retrying every 5 s)");
+                    self.present_wait_active = false;
+                    self.present_wait_retry = std::time::Instant::now() + std::time::Duration::from_secs(5);
                 }
             }
             Some(Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR)) | None => {}

@@ -9,7 +9,7 @@ if [ ! -f .openvr/headers/openvr_driver.h ]; then
 fi
 mkdir -p xreal/bin/linux64
 # Static libstdc++/libgcc and a plain-glibc dependency keep the library loadable inside SteamVR's runtime.
-g++ -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -fPIC -shared -fvisibility=hidden \
+g++ -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -fPIC -shared -fvisibility=hidden -fno-math-errno \
     -static-libstdc++ -static-libgcc -pthread \
     -I.openvr/headers -o xreal/bin/linux64/driver_xreal.so src/xreal_driver.cpp
 echo "built xreal/bin/linux64/driver_xreal.so"
