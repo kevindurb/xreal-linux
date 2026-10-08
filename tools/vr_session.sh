@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start/stop the XREAL VR session on the Deck: the presenter (owns the glasses' display and the IMU) and SteamVR.
 #   vr_session.sh start | stop | presenter | status | log
-#   XREAL_REPROJECT=1 enables reprojection; XREAL_EXTRA_ARGS passes more presenter flags (--sim-pose, --dump DIR)
+#   reprojection is on unless XREAL_REPROJECT=0; XREAL_EXTRA_ARGS passes more presenter flags (--sim-pose, --dump DIR)
 # The glasses must already be in full SBS (a single 3840x1080 mode), follow mode, Stabilizer off.
 set -uo pipefail
 export XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0
@@ -23,7 +23,7 @@ case "${1:-status}" in
     fi
     stop; sleep 3; rm -f "$LOG"
     ARGS="--monitor DP-1"
-    [ "${XREAL_REPROJECT:-0}" = 1 ] && ARGS="$ARGS --reproject"   # rotational reprojection (experimental)
+    [ "${XREAL_REPROJECT:-1}" = 1 ] && ARGS="$ARGS --reproject"   # rotational reprojection: hides SteamVR's missed frames (docs/findings.md)
     ARGS="$ARGS ${XREAL_EXTRA_ARGS:-}"
     systemd-run --user --unit=xreal-presenter --description="XREAL presenter" -p RuntimeMaxSec=14400 \
       --setenv=XDG_RUNTIME_DIR --setenv=WAYLAND_DISPLAY --setenv=RUST_BACKTRACE=1 \
@@ -34,7 +34,7 @@ case "${1:-status}" in
   presenter)   # restart only the presenter (SteamVR keeps running and the driver reconnects)
     systemctl --user stop xreal-presenter 2>/dev/null; systemctl --user reset-failed xreal-presenter 2>/dev/null; rm -f "$LOG"
     ARGS="--monitor DP-1"
-    [ "${XREAL_REPROJECT:-0}" = 1 ] && ARGS="$ARGS --reproject"
+    [ "${XREAL_REPROJECT:-1}" = 1 ] && ARGS="$ARGS --reproject"
     ARGS="$ARGS ${XREAL_EXTRA_ARGS:-}"
     systemd-run --user --unit=xreal-presenter --description="XREAL presenter" -p RuntimeMaxSec=14400 \
       --setenv=XDG_RUNTIME_DIR --setenv=WAYLAND_DISPLAY --setenv=RUST_BACKTRACE=1 \

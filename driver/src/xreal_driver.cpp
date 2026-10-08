@@ -50,7 +50,7 @@ static int64_t NowNs() {
 }
 
 // Valve's "running start": vsync is declared this far ahead of the real vblank so SteamVR starts each frame with headroom.
-static const int64_t kRunningStartNs = 2'000'000;
+static const int64_t kRunningStartNs = 8'000'000;   // 2 ms let SteamVR's bad frames through with Home on; 8 ms and more did not (docs/findings.md)
 
 // Vulkan values we need without including vulkan.h
 static const uint32_t kUsageTransferSrc = 0x1, kUsageSampled = 0x4, kUsageInputAttachment = 0x80;

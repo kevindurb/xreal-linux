@@ -33,10 +33,11 @@ context: |
     is put into standby after 5 s of stillness), a modest per-eye render size (the Deck's GPU is saturated by SteamVR Home), motionSmoothing off.
   - SteamVR's Present() means "submitted", not "finished". Imported textures use opaque-fd external memory with SteamVR's exact image
     parameters (same GPU required; AMD verified, other vendors unverified).
-  - KNOWN OPEN BUG: with SteamVR Home's dashboard, hovering over a button (the pointer appearing or disappearing) produces single
-    bad frames in both eyes (world content wrong, head-locked overlays right). Not caused by bounds, layer count, texture churn,
-    GetPose or velocity. Leading theory (unverified): the old frame-age guard showed frames 50+ ms old, by which time SteamVR was
-    redrawing that swap image; the presenter now shows only the newest frame and waits on its write fence.
+  - DASHBOARD BAD FRAMES (worked around, SteamVR's own output): with SteamVR Home's dashboard, hovering a button produced single bad
+    frames in both eyes (world content wrong, head-locked overlays right). Neither korejan/steamvr-compositor-sync nor
+    enableLinuxVulkanAsync removes them, and our fence wait is not the cause. The PostPresent hold hides them but makes motion judder.
+    What works (measured, and confirmed by the wearer with Home on): hold on, driver_xreal.running_start_ms 8 (the default), and the
+    presenter's --reproject (on by default in tools/vr_session.sh). See docs/findings.md. The root cause inside SteamVR is not known.
 
   Environment and workflow:
   - The Deck is reached with `ssh steamdeck` over Tailscale. Its Tailscale node key can expire (SSH then times out).

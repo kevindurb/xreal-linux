@@ -1,10 +1,8 @@
-> **Status (2026-10-07, test stopped early, Deck cleaned up).** Done: 1.x, 2.1-2.5, 3.1-3.3, 5.x. Measured and written up in `docs/findings.md`: the sync layer
-> and `enableLinuxVulkanAsync` do NOT remove the bad frames (so 4.1 as written does not apply, and the layer was uninstalled from the Deck). The presenter-side
-> filter (6.x) is dropped by decision: it hides a symptom, and working PCVR setups do not need it. What does work, measured: `driver_xreal.running_start_ms`
-> of 8 or more removes the bad frames with the hold on; the hold causes the judder; `--reproject` removes the judder (hold on or off); Home is GPU-bound on the Deck.
-> Next: run hold on + running start 8 + `--reproject` + Home on end to end (bad frames and judder), have the wearer check it, then change the defaults
-> (running start, `--reproject`; the hold default stays true), update `driver/README.md`, `tools/vr_session.sh`, `openspec/config.yaml` (7.3, 7.4) and re-review
-> specs/tasks 4.x and 6.x, which no longer match the plan. Deck state: SteamVR settings back to Home off, hold on, no async, no running_start_ms key.
+> **Status (2026-10-07): resolved by a different route than planned.** The wearer confirmed "perfect" (Home on) with hold on, `running_start_ms` 8 (now the driver
+> default) and `--reproject` (now on by default in `tools/vr_session.sh`). The sync layer (2.x) and `enableLinuxVulkanAsync` (3.x) were measured and do NOT remove
+> the bad frames (layer uninstalled from the Deck); 4.x (hold default false) is not adopted because the hold stays on; the presenter filter (6.x) was dropped by
+> decision. Findings: `docs/findings.md`. Left: measure bad frames with the hold off and a later running start (not needed for the fix), run `tools/doctor.sh` check
+> 7.2, and archive the change after its specs are updated to match (they still describe the layer/filter plan).
 
 ## 1. Land the uncommitted diagnostics
 
@@ -56,5 +54,5 @@
 
 - [x] 7.1 Add a `tools/doctor.sh` check that warns when neither the layer nor the async setting is active, and reports which one is.
 - [ ] 7.2 Verify: run `tools/doctor.sh` with and without the layer installed and check the warning appears only without it.
-- [ ] 7.3 Document the Home-off aurora option and the chosen workaround in `driver/README.md`. Move the bad-frame entry in `docs/open-questions.md` to `docs/findings.md` with the measured result.
-- [ ] 7.4 Update the "KNOWN OPEN BUG" note in `openspec/config.yaml` to match the outcome.
+- [x] 7.3 Document the Home-off aurora option and the chosen workaround in `driver/README.md`. Move the bad-frame entry in `docs/open-questions.md` to `docs/findings.md` with the measured result.
+- [x] 7.4 Update the "KNOWN OPEN BUG" note in `openspec/config.yaml` to match the outcome.

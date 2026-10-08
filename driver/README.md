@@ -47,11 +47,11 @@ Found while tuning on a Steam Deck. All are plain SteamVR settings, not driver c
   `pauseCompositorOnStandby` to false.
 - `driver_xreal.render_width` / `render_height` (per eye): the driver's recommended render size, 1280x720 by default. The
   Deck's GPU was pinned at 100% at 1920x1080 per eye with SteamVR Home; 1280x720 leaves headroom.
-- `driver_xreal.hold_after_present` (default true): holds SteamVR in `PostPresent` until the next running start (2 ms before
+- `driver_xreal.hold_after_present` (default true): holds SteamVR in `PostPresent` until the next running start (`running_start_ms` before
   the glasses' vblank). Set false to compare.
-- `driver_xreal.running_start_ms` (default 2): how long before the glasses' real vblank SteamVR is told the vsync happens, and
-  when `PostPresent` releases it. With Home on and the hold on, 8 ms or more removed the bad frames in a sweep capture (see
-  `docs/findings.md`); it does not reduce the judder the hold causes.
+- `driver_xreal.running_start_ms` (default 8): how long before the glasses' real vblank SteamVR is told the vsync happens, and
+  when `PostPresent` releases it. With Home on and the hold on, 2 ms let a few bad frames through, 8 ms or more
+  removed them in the sweep capture (see `docs/findings.md`). The hold's judder is covered by the presenter's `--reproject`.
 - `driver_xreal.hold_max_ms` (default -1, no cap): the longest `PostPresent` hold in milliseconds. A negative value holds until the
   next running start; a smaller value lets SteamVR resume sooner, at the cost of the hold's frame spacing.
 - `driver_xreal.seconds_from_vsync_to_photons`: overrides the advertised latency (default: the running start plus one refresh;

@@ -29,7 +29,7 @@ matching SteamVR's image parameters, same GPU) and blits each eye's latest image
 no head tracking, lens correction or reprojection yet, and no GPU synchronisation with the compositor's writes
 (expect occasional tearing). Needs the glasses in full SBS (a single `3840x1080` mode), follow mode, Stabilizer off.
 
-## Reprojection (`--reproject`, experimental)
+## Reprojection (`--reproject`; `tools/vr_session.sh` turns it on by default)
 
 SteamVR's compositor does no async reprojection for a direct-mode driver, so when the app misses a frame the old one is simply
 repeated. With `--reproject` the presenter warps each eye by how far the head has turned since SteamVR rendered it: the driver
