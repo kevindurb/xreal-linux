@@ -50,5 +50,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "AppImage built from $GITHUB_SHA in the pinned Steam Runtime SDK."
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" $( [[ "$GITHUB_REF_NAME" == *-* ]] && echo --prerelease ) --title "$GITHUB_REF_NAME" --notes "AppImage built from $GITHUB_SHA in the pinned Steam Runtime SDK."
           gh release upload "$GITHUB_REF_NAME" dist/xreal-linux-x86_64.AppImage --clobber
