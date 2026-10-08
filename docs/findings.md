@@ -414,3 +414,10 @@ follow 10-25 s, toggle-on 25-65 s, anchor 65-95 s, toggle-off 95-135 s, follow 1
 - Whether a host request (SDK `NRGrayscaleCameraStart`, inferred id 10053) can start the camera with the glasses in Follow mode and the Stabilizer off.
 - Which port accepts requests (none of 52990-52995 carried anything), and the request header and any handshake.
 - Whether anchor mode itself (Stabilizer behaviour) conflicts with using the glasses as a headset, which was the original objection.
+
+
+## First host-to-glasses request (2026-10-08)
+
+One read-only request (`NRGlassesGetSWVersion`, 8 bytes) sent to each of ports 52990-52995: every port accepted the connection and closed it
+10 ms after receiving the packet, without a reply; the streams were unaffected. Details and the likely reason (a missing packet header and/or
+handshake) are in `docs/xreal-link-messages.md` section 11. The anchor-mode run above is still the only observed way the camera starts.

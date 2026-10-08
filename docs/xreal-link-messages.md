@@ -533,3 +533,25 @@ should be settled by observing a working host or by an approved, minimal, read-o
 
 Decoding note: `10030` and `10002` are binary structs, so a generic protobuf decoder reports them as undecoded (as `tools/xreal_link.py` does).
 Rates measured in the same run: camera 15.0 Hz while on, timestamp stream 59.9 Hz, IMU 999.1 Hz + 397.9 Hz.
+
+
+## 11. First host-to-glasses request: result (2026-10-08, `tools/xreal_probe.py`)
+
+The first message this project has ever sent to the glasses: one packet, `NRGlassesGetSWVersion` (id 10013, empty body),
+`27 1d 00 00 00 02 1a 00` (8 bytes), to each of the six silent ports 52990-52995 in turn, one connection each, with the glasses on the
+latest firmware in Follow mode, nothing else connected. The probe listens 1.5 s first, sends once, waits 3 s, closes; it cannot send
+anything but the allowlisted read-only getters.
+
+| Port | Before sending | After sending | Result |
+|---|---|---|---|
+| 52990-52995 (each) | accepted instantly, 0 bytes in 1.5 s | **0 bytes; the glasses closed the connection 10 ms after receiving the packet** | no reply on any of them |
+
+- The close is caused by the packet: the same ports stayed open and silent for the whole 150 s anchor-mode capture when nothing was sent. So
+  these ports **do read incoming data and reject this packet**.
+- Afterwards the streams were unaffected (timestamps 60 Hz, IMU 1400 records/s, no parse errors), so the probe left no lasting effect.
+- A rejection this fast fits a framing/handshake mismatch rather than "unknown request": the SDK's own sender logs
+  `tcpIpSendMsg fail ... msg.size() <= packet_msg_header_length`, i.e. its packets carry a fixed-length header beyond the 6-byte
+  `msg_id` + length frame, and the recorded stream packets have 16 more bytes before their payload (an 8-byte field block, then a u64
+  nanosecond timestamp at packet offset 14). My packet had no such header. A request probably needs the full header and may need an
+  initial handshake message (`NotifyClientInfo`/`NRGlassesSetSDKVersion`, id 10014); neither is known yet.
+- Not yet tried: the push-stream ports (52996-52999) as request ports; a request with a full 22-byte header; a handshake first.
