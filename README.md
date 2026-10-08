@@ -20,6 +20,7 @@ settings, and a second display enabled (the Deck's own screen) so desktop window
 4. Start SteamVR from Steam. The glasses switch to full side-by-side by themselves and the headset appears; when SteamVR quits they go back
    to the mode they were in. Each switch re-plugs the glasses' display for about two seconds, so the desktop may rearrange windows.
    Nothing is done to the glasses while SteamVR is not running, so you can use them as a normal monitor.
+   *If SteamVR says "Headset Not Detected (108)" or "Some Add-ons Blocked", SteamVR's safe mode disabled the driver after a crash or a slow start. Quit SteamVR, run `check` (it reports `driver_xreal.blocked_by_safe_mode` as a failure) and then `fix`, which clears the block after asking.*
 
 Afterwards, from the installed copy (`~/.local/share/xreal-linux/xreal-linux.AppImage`) or the downloaded file:
 

@@ -2,7 +2,7 @@
 name = "xreal-presenter"
 version = "0.1.0"
 edition = "2021"
-description = "Fullscreen Vulkan presenter for XREAL glasses (side-by-side stereo test pattern for now)"
+description = "Fullscreen Vulkan presenter for XREAL glasses (presents SteamVR's frames side by side; calm splash while it waits)"
 
 [dependencies]
 ash = "0.38"

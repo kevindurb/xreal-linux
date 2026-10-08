@@ -115,8 +115,9 @@ Open:
 | Change | Tasks | State |
 |---|---|---|
 | `add-6dof-camera-tracking` | 4 done, 25 open | **parked** by the user 2026-10-08 (camera start unsolved, see section 7) |
-| `2026-10-08-add-installable-package` | 27 of 31 | archived; open: 1.1 second-distro test pattern, 4.4 real sleep/wake, 7.2 game mode, 7.3 Flatpak Steam |
-| `support-other-gpus` | 0 of 17 | not started |
+| `2026-10-08-add-installable-package` | 27 of 31 | archived; open: 1.1 second-distro run (`--test-pattern`), 4.4 real sleep/wake, 7.2 game mode, 7.3 Flatpak Steam |
+| `calm-splash-screen` | see its tasks.md | code done; the SteamVR/wearer checks (5.1, 5.2, 3.2 and the restart half of 3.4) are open |
+| `support-other-gpus` | 0 of 17 | not started; its "test pattern" wording (`proposal.md`, `tasks.md` 2.3, `specs/gpu-selection/spec.md`) now means the calm splash for a GPU mismatch, and is to be reworded when that change is next touched |
 | `2026-10-07-fix-dashboard-glitches-and-judder` | archived | done |
 
 ## 9. State of the machines at the end of this session
@@ -141,3 +142,4 @@ What exists, all in this repo and measured on the Deck (details in `docs/finding
 - The checkout scripts still work: `tools/vr_session.sh` stops/restarts the units around a manual session and restores the display mode on `stop`; `tools/doctor.sh` runs the binary's `check`.
 - Test hooks: `XREAL_CONTROL_ADDR=host:port` points the control-port client elsewhere (a dead or silent port), `XREAL_SETTLE_MS` changes the window settle time, `XREAL_DRIVER_DIR` names a checkout's driver for `check`.
 - The Deck's dev account was used for the tests (`setup`, `uninstall` restored the checkout registration). Run `uninstall` before going back to the checkout workflow, or `setup` again to use the package.
+- Startup hardening (change `harden-steamvr-startup`): `serve` waits up to 10 s for `WAYLAND_DISPLAY`/`DISPLAY` (taken from `systemctl --user show-environment`) instead of panicking in winit when SteamVR is launched right after login (`presenter/src/display_wait.rs`). `check` fails and `fix` clears `driver_xreal.blocked_by_safe_mode`, which SteamVR's safe mode sets after the driver stalls (symptom: "Headset Not Detected (108)" / "Some Add-ons Blocked"). Deck verification of both (reboot then launch SteamVR at once; set the flag by hand then `check`/`fix`) is still to do.

@@ -1,19 +1,21 @@
 //! Fullscreen Vulkan presenter for XREAL glasses.
 //!
-//! This first version draws a side-by-side stereo *test pattern* on the glasses' output so we can check that the
-//! glasses really show a different image to each eye in their SBS mode. It will grow into the thing that imports
-//! SteamVR's per-eye textures and presents them.
+//! Imports SteamVR's per-eye textures (from the driver) and presents them side by side on the glasses' output. While nothing is
+//! presenting it shows a calm splash (`splash.rs`); `--test-pattern` draws a side-by-side stereo test pattern instead, to check
+//! that the glasses really show a different image to each eye in their SBS mode.
 //!
-//! usage: xreal-presenter [--monitor NAME] [--socket-name NAME] [--service] [--restore-display] [--reproject] [--eye-rotation | --eye-rotation-reversed] [--test-grid] [--no-set-sbs | --set-sbs-only] [--no-imu-calibration] [--print-calibration] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default output: the one whose EDID is the glasses')
+//! usage: xreal-presenter [--monitor NAME] [--socket-name NAME] [--service] [--restore-display] [--reproject] [--eye-rotation | --eye-rotation-reversed] [--test-grid] [--test-pattern] [--no-set-sbs | --set-sbs-only] [--no-imu-calibration] [--print-calibration] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default output: the one whose EDID is the glasses')
 //!
-//! Left half of the screen = left eye (red tint), right half = right eye (blue tint). A green square slides across
-//! each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
+//! `--test-pattern`: left half of the screen = left eye (red tint), right half = right eye (blue tint). A green square slides
+//! across each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
 //! float at a different depth from the frame. White borders and a white centre line show the exact edges.
 
+mod display_wait;
 mod glasses;
 mod link;
 mod output;
 mod setup;
+mod splash;
 mod tracking;
 mod warp;
 
@@ -307,6 +309,15 @@ const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.
 
 /// Debug capture of what the glasses show (the centre of each eye's half), copied by the frame's own submission so that
 /// capturing does not change the timing being captured.
+/// Host-visible staging buffer holding the splash patch as the swapchain's pixels.
+struct SplashBuf {
+    buf: vk::Buffer,
+    mem: vk::DeviceMemory,
+    ptr: *mut u8,
+    w: u32,
+    h: u32,
+}
+
 struct Capture {
     buf: vk::Buffer,
     mem: vk::DeviceMemory,
@@ -356,13 +367,17 @@ struct Gfx {
     warp: Option<WarpPipe>,
     reproject: bool,
     test_grid: bool,  // draw a straight-line grid instead of the eye images
+    test_pattern: bool, // draw the red/blue stereo test pattern instead of everything else (`--test-pattern`)
+    splash: Option<SplashBuf>,
+    splash_since: Option<Instant>, // when the splash started showing; None while SteamVR's eyes are on screen
+    splash_written: Option<f32>,   // fade level the staging buffer holds
     dump_dir: Option<std::path::PathBuf>,
     dump_remaining: u32,
     dump_count: u32,
     dump_index: u32,
     capture: Option<Capture>,
     capture_pending: Option<u32>, // dump index copied by the submission in flight
-    pub fallbacks: u32,  // frames drawn as the test pattern while the driver was connected (should stay 0)
+    pub fallbacks: u32,  // frames drawn as the splash while the driver was connected (should stay 0)
     last_delta_deg: f32, // head rotation between SteamVR's render pose and now, last warped frame
     semaphore_fd: Option<khr::external_semaphore_fd::Device>, // None: the GPU cannot wait on sync files, so the CPU waits
     read_ready: [vk::Semaphore; 2], // per eye: carries the writer's sync file into our submission
@@ -464,7 +479,7 @@ impl Gfx {
             _entry: entry, instance, surface_loader, surface, phys, device, queue, queue_family, swapchain_loader,
             swapchain: vk::SwapchainKHR::null(), images: vec![], views: vec![], format: vk::Format::B8G8R8A8_UNORM,
             extent: vk::Extent2D { width: 1, height: 1 }, pool, cmd, image_available, render_done: vec![], in_flight,
-            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, test_grid, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, capture: None, capture_pending: None, fallbacks: 0, last_delta_deg: 0.0,
+            mem_props, seen: Default::default(), vsync_seq: 0, warp: None, reproject, test_grid, test_pattern: false, splash: None, splash_since: None, splash_written: None, dump_dir: None, dump_remaining: 0, dump_count: 30, dump_index: 0, capture: None, capture_pending: None, fallbacks: 0, last_delta_deg: 0.0,
             semaphore_fd, read_ready, present_wait, present_id: 0, present_wait_timeouts: 0, present_wait_active: true, present_wait_retry: std::time::Instant::now(), used_frame: None,
             new_frames: 0, new_frame_age_ms: (0.0, 0.0), last_render_q: None, render_steps_deg: vec![],
         };
@@ -535,7 +550,64 @@ impl Gfx {
     }
 
 
-    /// Test pattern: used until a driver is connected and presenting.
+    /// The calm splash: clear to the background, then copy the patch into the middle of each half. Transfer commands only.
+    unsafe fn record_splash(&mut self, cmd: vk::CommandBuffer, image: vk::Image, level: f32) -> Result<(), Box<dyn std::error::Error>> {
+        if self.splash.is_none() {
+            let (_, w, h) = splash::patch();
+            let size = (w * h * 4) as u64;
+            let buf = self.device.create_buffer(&vk::BufferCreateInfo::default().size(size).usage(vk::BufferUsageFlags::TRANSFER_SRC), None)?;
+            let reqs = self.device.get_buffer_memory_requirements(buf);
+            let want = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+            let mt = (0..self.mem_props.memory_type_count)
+                .find(|&j| reqs.memory_type_bits & (1 << j) != 0 && self.mem_props.memory_types[j as usize].property_flags.contains(want))
+                .ok_or("no host-visible memory type")?;
+            let mem = self.device.allocate_memory(&vk::MemoryAllocateInfo::default().allocation_size(reqs.size).memory_type_index(mt), None)?;
+            self.device.bind_buffer_memory(buf, mem, 0)?;
+            let ptr = self.device.map_memory(mem, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *mut u8;
+            self.splash = Some(SplashBuf { buf, mem, ptr, w, h });
+        }
+        let sb = self.splash.as_ref().unwrap();
+        // The previous frame has finished (draw waited for its fence), so the buffer can be rewritten; once the fade is over it is not.
+        if self.splash_written != Some(level) {
+            let (coverage, w, h) = splash::patch();
+            splash::scale_patch(coverage, level, std::slice::from_raw_parts_mut(sb.ptr, (w * h * 4) as usize));
+            self.splash_written = Some(level);
+        }
+        let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+        let to_dst = vk::ImageMemoryBarrier::default()
+            .image(image).subresource_range(range)
+            .old_layout(vk::ImageLayout::UNDEFINED).new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+        self.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(), &[], &[], &[to_dst]);
+        // The clear and the patch's uncovered pixels must be the same colour. The patch bytes are copied unchanged; an sRGB image
+        // decodes a clear value, so decode it to land on the same byte.
+        let bg = splash::background_byte(level) as f32 / 255.0;
+        let bg = if matches!(self.format, vk::Format::B8G8R8A8_SRGB | vk::Format::R8G8B8A8_SRGB) {
+            if bg <= 0.04045 { bg / 12.92 } else { ((bg + 0.055) / 1.055).powf(2.4) }
+        } else { bg };
+        self.device.cmd_clear_color_image(cmd, image, vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &vk::ClearColorValue { float32: [bg, bg, bg, 1.0] }, &[range]);
+        let clear_done = vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+        self.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(), &[clear_done], &[], &[]);
+        let regions: Vec<vk::BufferImageCopy> = splash::offsets(self.extent.width, self.extent.height, sb.w, sb.h).into_iter().map(|(x, y)| {
+            vk::BufferImageCopy::default()
+                .image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
+                .image_offset(vk::Offset3D { x, y, z: 0 })
+                .image_extent(vk::Extent3D { width: sb.w, height: sb.h, depth: 1 })
+        }).collect();
+        self.device.cmd_copy_buffer_to_image(cmd, sb.buf, image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &regions);
+        let to_present = vk::ImageMemoryBarrier::default()
+            .image(image).subresource_range(range)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL).new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+        self.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            vk::DependencyFlags::empty(), &[], &[], &[to_present]);
+        Ok(())
+    }
+
+    /// Test pattern (`--test-pattern`): the red/blue stereo check.
     unsafe fn record_pattern(&self, cmd: vk::CommandBuffer, idx: usize, image: vk::Image, t: f32) {
         let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
         let to_attachment = vk::ImageMemoryBarrier::default()
@@ -1018,7 +1090,7 @@ impl Gfx {
         Ok(out)
     }
 
-    /// Draw one frame: the driver's eyes if it is presenting, otherwise the stereo test pattern.
+    /// Draw one frame: the driver's eyes if it is presenting, otherwise the splash (or, with `--test-pattern`, the stereo test pattern).
     unsafe fn draw(&mut self, t: f32, window: &Window, shared: &Mutex<Shared>, pose: &Mutex<tracking::PoseState>) -> Result<(), Box<dyn std::error::Error>> {
         self.device.wait_for_fences(&[self.in_flight], true, u64::MAX)?;
         if let (Some(index), Some(c)) = (self.capture_pending.take(), &self.capture) {
@@ -1076,6 +1148,9 @@ impl Gfx {
         if eyes.is_none() && shared.lock().unwrap().connected {
             self.fallbacks += 1;
         }
+        // The fade restarts each time the splash starts to show: the window opening, or SteamVR's eyes going away.
+        if eyes.is_some() { self.splash_since = None; }
+        else if self.splash_since.is_none() { self.splash_since = Some(Instant::now()); self.splash_written = None; }
         let mut capture_index = None;
         if let Some(dir) = self.dump_dir.clone() {
             // Debug: `touch DIR/trigger` captures the next frames as shown on the glasses (both eyes, centre crop) as raw RGBA.
@@ -1128,6 +1203,9 @@ impl Gfx {
                     wait.push(s);
                     stages.push(vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::FRAGMENT_SHADER);
                 }
+                if self.test_pattern {
+                    self.record_pattern(cmd, idx as usize, image, t);
+                } else {
                 // Reproject when we have the pose SteamVR rendered for and a current tracked pose; otherwise plain blit.
                 let mut delta = None;
                 let head_rotation = if self.reproject && self.warp.is_some() {
@@ -1149,9 +1227,14 @@ impl Gfx {
                     Some(r) => self.record_warp(cmd, idx as usize, image, Some(&e), r),
                     None => self.record_blit(cmd, image, e.imgs, e.bounds),
                 }
+                }
             }
+            None if self.test_pattern => self.record_pattern(cmd, idx as usize, image, t),
             None if self.test_grid && self.warp.is_some() => self.record_warp(cmd, idx as usize, image, None, warp::eye_rows(&IDENTITY)),
-            None => self.record_pattern(cmd, idx as usize, image, t),
+            None => {
+                let level = splash::fade_level(self.splash_since.map_or(0.0, |s| s.elapsed().as_secs_f32()));
+                self.record_splash(cmd, image, level)?;
+            }
         }
         if let Some(i) = capture_index {
             self.record_capture(cmd, image);
@@ -1192,6 +1275,10 @@ impl Drop for Gfx {
             self.device.destroy_fence(self.in_flight, None);
             self.device.destroy_semaphore(self.image_available, None);
             for s in self.read_ready { self.device.destroy_semaphore(s, None); }
+            if let Some(s) = self.splash.take() {
+                self.device.destroy_buffer(s.buf, None);
+                self.device.free_memory(s.mem, None);
+            }
             if let Some(c) = self.capture.take() {
                 self.device.destroy_buffer(c.buf, None);
                 self.device.free_memory(c.mem, None);
@@ -1238,12 +1325,13 @@ struct App {
     move_attempts: u32,
     reproject: bool,
     test_grid: bool,
+    test_pattern: bool,
     dump_dir: Option<std::path::PathBuf>,
     dump_count: u32,
     pose: Arc<Mutex<tracking::PoseState>>,
     /// Exit a few seconds after the driver goes away (the socket-activated service); otherwise run until closed.
     service: bool,
-    /// Show the window without waiting for a driver (`--test-grid`, `--sim-pose`).
+    /// Show the window without waiting for a driver (`--test-grid`, `--test-pattern`, `--sim-pose`).
     standalone: bool,
     ever_connected: bool,
     disconnected_since: Option<Instant>,
@@ -1324,6 +1412,7 @@ impl App {
         };
         match unsafe { Gfx::new(&window, self.reproject, self.test_grid) } {
             Ok(mut gfx) => {
+                gfx.test_pattern = self.test_pattern;
                 gfx.dump_dir = self.dump_dir.clone();
                 gfx.dump_count = self.dump_count;
                 println!("window opened on {name}");
@@ -1501,6 +1590,7 @@ fn main() {
     let mut service = std::env::var_os("LISTEN_FDS").is_some();
     let mut reproject = false;
     let mut test_grid = false;
+    let mut test_pattern = false;
     let mut sim_pose = false;
     let mut sim_yaw = 25.0f64;
     let mut sim_pitch = 0.0f64;
@@ -1531,6 +1621,8 @@ fn main() {
             warp::set_eye_rotation_mode(2);
         } else if a == "--test-grid" {
             test_grid = true;
+        } else if a == "--test-pattern" {
+            test_pattern = true;
         } else if a == "--no-imu-calibration" {
             use_imu_calibration = false;
         } else if a == "--no-set-sbs" {
@@ -1572,6 +1664,9 @@ fn main() {
         std::process::exit(1);
     }
     { let m = monitor_override.clone(); std::thread::spawn(move || glasses::watch_display_modes(m)); }
+    if service && !sim_pose {
+        display_wait::ensure_display();
+    }
     let el = EventLoop::new().expect("event loop");
     el.set_control_flow(ControlFlow::Poll);
     let shared = Arc::new(Mutex::new(Shared::default()));
@@ -1587,8 +1682,8 @@ fn main() {
         std::thread::spawn(move || tracking::run(p, cal, use_imu_calibration));
     }
     { let (sh, p) = (shared.clone(), pose.clone()); let cal = calibration.clone(); let gs = glasses_status.clone(); let mo = monitor_override.clone(); std::thread::spawn(move || link_thread(sh, p, cal, gs, mo)); }
-    let standalone = test_grid || sim_pose;
-    let mut app = App { monitor_override, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), last_output_check: None, last_open_failure: None, move_attempts: 0, reproject, test_grid, dump_dir, dump_count, pose: pose_for_app, service, standalone, ever_connected: false, disconnected_since: None, last_reason: None, wanted_since: None };
+    let standalone = test_grid || test_pattern || sim_pose;
+    let mut app = App { monitor_override, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), last_output_check: None, last_open_failure: None, move_attempts: 0, reproject, test_grid, test_pattern, dump_dir, dump_count, pose: pose_for_app, service, standalone, ever_connected: false, disconnected_since: None, last_reason: None, wanted_since: None };
     el.run_app(&mut app).expect("run");
 }
 

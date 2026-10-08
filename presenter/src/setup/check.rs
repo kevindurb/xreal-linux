@@ -173,6 +173,9 @@ pub fn judge_settings(j: &Value) -> Vec<Line> {
     let s = "SteamVR";
     let (st, pw, d) = (&j["steamvr"], &j["power"], &j["driver_xreal"]);
     let mut out = vec![];
+    if d.get("blocked_by_safe_mode").and_then(Value::as_bool) == Some(true) {
+        out.push(line(s, Fail, "driver_xreal.blocked_by_safe_mode is true: SteamVR disabled the XREAL driver after a crash (\"Headset Not Detected (108)\" / \"Some Add-ons Blocked\"); run `xreal-linux fix` to clear it"));
+    }
     let forced = st.get("forcedDriver").and_then(Value::as_str);
     out.push(line(s, if forced == Some("xreal") { Ok } else { Warn }, format!("steamvr.forcedDriver = {} (want 'xreal')", forced.map(|f| format!("'{f}'")).unwrap_or_else(|| "None".into()))));
     let t = pw.get("turnOffScreensTimeout").and_then(Value::as_f64).unwrap_or(5.0);
@@ -438,6 +441,15 @@ mod tests {
         assert!(lines.iter().filter(|l| l.level == Level::Warn).count() >= 5, "{lines:#?}");
         assert!(lines.iter().any(|l| l.text.contains("hold_after_present") && l.level == Level::Warn));
         assert!(lines.iter().any(|l| l.text.contains("running_start_ms = 4")));
+    }
+
+    #[test]
+    fn a_safe_mode_block_of_the_driver_fails_with_the_remedy() {
+        let lines = judge_settings(&json!({"driver_xreal": {"blocked_by_safe_mode": true}}));
+        let l = lines.iter().find(|l| l.text.contains("blocked_by_safe_mode")).unwrap();
+        assert_eq!(l.level, Level::Fail);
+        assert!(l.text.contains("xreal-linux fix"));
+        assert!(!judge_settings(&json!({"driver_xreal": {"blocked_by_safe_mode": false}})).iter().any(|l| l.level == Level::Fail));
     }
 
     #[test]

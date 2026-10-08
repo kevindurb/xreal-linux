@@ -13,12 +13,17 @@ pub struct Wanted {
     pub why: &'static str,
 }
 
+/// SteamVR's safe mode writes this when a driver crashed or stalled; while it is true the driver is not loaded.
+pub const BLOCKED_KEY: &str = "blocked_by_safe_mode";
+
+/// `value` Null means the key must be absent (or false).
 pub fn wanted() -> Vec<Wanted> {
     vec![
         Wanted { section: "steamvr", key: "forcedDriver", value: json!("xreal"), why: "makes SteamVR use the XREAL driver (this also means SteamVR will not use another headset until you undo it)" },
         Wanted { section: "power", key: "turnOffScreensTimeout", value: json!(86400), why: "the 5 s default puts the headset into standby after a few seconds of stillness" },
         Wanted { section: "power", key: "pauseCompositorOnStandby", value: json!(false), why: "keeps SteamVR drawing when it thinks the headset is idle" },
         Wanted { section: "steamvr", key: "motionSmoothing", value: json!(false), why: "the presenter does its own reprojection; SteamVR's smoothing fights it" },
+        Wanted { section: "driver_xreal", key: BLOCKED_KEY, value: Value::Null, why: "SteamVR's safe mode disabled the XREAL driver after a crash (\"Headset Not Detected (108)\"); clearing it lets the driver load again" },
     ]
 }
 
@@ -40,6 +45,7 @@ pub fn plan(settings: &Value) -> Vec<Change> {
             // A number setting is satisfied by a larger value (the timeout only has to be long).
             let satisfied = match (&old, &w.value) {
                 (Some(Value::Number(have)), Value::Number(want)) if w.key == "turnOffScreensTimeout" => have.as_f64() >= want.as_f64().map(|v| v.min(600.0)),
+                (Some(Value::Bool(false)) | None, Value::Null) => true,
                 (Some(have), want) => have == want,
                 (None, _) => false,
             };
@@ -50,7 +56,8 @@ pub fn plan(settings: &Value) -> Vec<Change> {
 
 pub fn describe(c: &Change) -> String {
     let old = c.old.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "not set".into());
-    format!("{}.{}: {} -> {}  ({})", c.section, c.key, old, c.new, c.why)
+    let new = if c.new.is_null() { "removed".to_string() } else { c.new.to_string() };
+    format!("{}.{}: {} -> {}  ({})", c.section, c.key, old, new, c.why)
 }
 
 pub fn steamvr_running() -> bool {
@@ -151,7 +158,14 @@ pub fn fix(env: &Env, dialog: &Dialog, dry_run: bool) -> FixOutcome {
     }
     let mut record = read_manifest(env);
     for c in &accepted {
-        settings.as_object_mut().unwrap().entry(c.section.clone()).or_insert_with(|| json!({}))[&c.key] = c.new.clone();
+        let section = settings.as_object_mut().unwrap().entry(c.section.clone()).or_insert_with(|| json!({}));
+        if c.new.is_null() {
+            if let Some(o) = section.as_object_mut() {
+                o.remove(&c.key);
+            }
+        } else {
+            section[&c.key] = c.new.clone();
+        }
         match record.iter_mut().find(|r| r.section == c.section && r.key == c.key) {
             Some(r) => r.new = c.new.clone(), // keep the original old value
             None => record.push(c.clone()),
@@ -179,11 +193,17 @@ pub fn restore(env: &Env, dry_run: bool) -> Result<Vec<String>, String> {
     let mut lines = vec![];
     for r in &record {
         let current = settings.get(&r.section).and_then(|s| s.get(&r.key)).cloned();
-        if current.as_ref() != Some(&r.new) {
+        // A key we removed (new is null) is still "ours" while it is absent.
+        let still_ours = if r.new.is_null() { current.is_none() } else { current.as_ref() == Some(&r.new) };
+        if !still_ours {
             lines.push(format!("{}.{} was changed since: left as it is", r.section, r.key));
             continue;
         }
-        lines.push(format!("{} {}.{} -> {}", if dry_run { "would restore" } else { "restored" }, r.section, r.key, r.old.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "not set".into())));
+        let mut line = format!("{} {}.{} -> {}", if dry_run { "would restore" } else { "restored" }, r.section, r.key, r.old.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "not set".into()));
+        if r.key == BLOCKED_KEY && r.old.is_some() {
+            line.push_str(" (this puts SteamVR's safe-mode block back, as it was before)");
+        }
+        lines.push(line);
         if !dry_run {
             let section = settings.as_object_mut().unwrap().entry(r.section.clone()).or_insert_with(|| json!({})).as_object_mut().unwrap();
             match &r.old {
@@ -282,6 +302,42 @@ mod tests {
         let record = read_manifest(&env);
         assert_eq!(record.iter().find(|r| r.key == "forcedDriver").unwrap().old, Some(json!("other")));
         assert_eq!(record.iter().find(|r| r.key == "motionSmoothing").unwrap().old, None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_safe_mode_block_is_planned_for_removal_only_when_set() {
+        assert!(!plan(&json!({"driver_xreal": {"blocked_by_safe_mode": false}})).iter().any(|c| c.key == BLOCKED_KEY));
+        assert!(!plan(&json!({})).iter().any(|c| c.key == BLOCKED_KEY));
+        let c = plan(&json!({"driver_xreal": {"blocked_by_safe_mode": true}})).into_iter().find(|c| c.key == BLOCKED_KEY).unwrap();
+        assert_eq!(c.old, Some(json!(true)));
+        assert!(describe(&c).contains("-> removed"));
+    }
+
+    #[test]
+    fn fix_clears_the_block_and_uninstall_puts_it_back_with_a_note() {
+        let original = json!({"driver_xreal": {"blocked_by_safe_mode": true, "running_start_ms": 8}, "steamvr": {"forcedDriver": "xreal", "motionSmoothing": false}, "power": {"turnOffScreensTimeout": 86400, "pauseCompositorOnStandby": false}});
+        let (root, env) = env("blocked", &original);
+        assert!(matches!(fix(&env, &yes(), false), FixOutcome::Applied(_)));
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(env.vrsettings()).unwrap()).unwrap();
+        assert!(after["driver_xreal"].get(BLOCKED_KEY).is_none());
+        assert_eq!(after["driver_xreal"]["running_start_ms"], 8, "other driver keys are untouched");
+        assert!(matches!(fix(&env, &yes(), false), FixOutcome::NothingToDo));
+        let backups = std::fs::read_dir(env.state_dir()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains("backup")).count();
+        assert_eq!(backups, 1);
+        let lines = restore(&env, false).unwrap();
+        assert!(lines.iter().any(|l| l.contains("safe-mode block back")), "{lines:?}");
+        let restored: Value = serde_json::from_str(&std::fs::read_to_string(env.vrsettings()).unwrap()).unwrap();
+        assert_eq!(restored["driver_xreal"][BLOCKED_KEY], true);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_declined_block_removal_changes_nothing() {
+        let (root, env) = env("blocked-no", &json!({"driver_xreal": {"blocked_by_safe_mode": true}, "steamvr": {"forcedDriver": "xreal", "motionSmoothing": false}, "power": {"turnOffScreensTimeout": 86400, "pauseCompositorOnStandby": false}}));
+        let before = std::fs::read(env.vrsettings()).unwrap();
+        assert!(matches!(fix(&env, &no(), false), FixOutcome::Declined));
+        assert_eq!(std::fs::read(env.vrsettings()).unwrap(), before);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
