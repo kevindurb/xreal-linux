@@ -2,7 +2,7 @@
 
 ## Context
 
-The presenter (Rust) reads the IMU over TCP 52998, fuses orientation and sends it to the driver over an abstract unix socket every ~2 ms (`presenter/src/tracking.rs`, driver `kMsgPose`). The driver reports that orientation at a fixed head height. The pose message is a fixed 16-word packet whose words 0-12 are used. The Eye's frames are on TCP 52997 and 52996 carries timestamps on the IMU's clock, but nothing reads either in the product code today. See proposal.md for what is verified and what is assumed.
+The presenter (Rust) reads the IMU over TCP 52998, fuses orientation and sends it to the driver over an abstract unix socket every ~2 ms (`presenter/src/tracking.rs`, driver `kMsgPose`). The driver reports that orientation at a fixed head height. The pose message is a fixed 16-word packet whose words 0-12 are used. The Eye's frames are on TCP 52997 and 52996 carries timestamps on the IMU's clock, but nothing reads either in the product code today. The glasses' control port (TCP 52999) answers the vendor SDK's request ids and returns the factory calibration on request. See proposal.md for what is verified and what is assumed.
 
 Constraints that shape the approach:
 - The Steam Deck's GPU is busy with SteamVR and the presenter; the CPU has headroom but is a 4-core/8-thread Zen 2 shared with SteamVR. The tracker must be CPU-only and light.
@@ -49,11 +49,17 @@ Words 13-15 are all that is free in the existing message, which cannot hold posi
 
 The estimator's world frame is gravity-aligned like ours, with an arbitrary yaw. The tracker reports position in its own frame; the presenter applies the yaw offset between the tracker's orientation and the fused IMU orientation (estimated continuously), and a fixed lever arm from the camera to the head origin. Position is relative to where tracking starts; height comes from a user floor height, not from the visual estimate.
 
-### 6. Calibration
+### 6. Calibration starts from the glasses' factory calibration
 
-Intrinsics (with distortion model chosen by fit: pinhole versus equidistant) come from a printed checkerboard and OpenCV, run on a PC. Camera-IMU extrinsics and the time offset come from Kalibr run in a container on a PC over a recorded excitation session, converted from our capture format. OpenVINS's online refinement then starts from those values. The calibration file is JSON keyed by the glasses' serial.
+The tracker asks the glasses for their configuration (read-only `GetConfig`, request id 10015 on port 52999, `docs/xreal-link-messages.md` section 13) and uses its SLAM-camera intrinsics (radial model) and camera-to-IMU transform (`imu_p_cam`, `imu_q_cam`) as the starting calibration. The response is cached per serial in the user's config directory, never in the repo (it contains the serial), and a cached copy is used when the glasses cannot be asked. The camera-to-IMU time offset is not in the file: it is measured with a short shake capture (task 1.3) and stored beside the cache.
 
-Alternatives: relying only on online calibration (no ground truth for a first fix, risky); an in-house camera-IMU solver (later).
+The stream carries half the sensor rows (inferred, see the proposal), so the vertical focal length and principal point are halved and only the first 504 columns are used until a printed grid shows otherwise. OpenVINS's online refinement of the extrinsics and time offset then starts from these values.
+
+Checks before trust: a checkerboard capture is scored for reprojection error and a shake capture for the extrinsics, each against a documented threshold. Only if a check fails do we fall back to the original plan: fit intrinsics with OpenCV on a printed checkerboard and the camera-IMU extrinsics with Kalibr in a container.
+
+Alternatives: always fitting our own calibration (the extra work is only needed if the factory values are not good enough); relying only on online calibration (no ground truth for a first fix, risky); an in-house camera-IMU solver (later).
+
+Dependence on the Deck: none; the request is the same on any Linux host with the glasses on their link-local network. The cached file must be per unit, since the calibration differs between pairs of glasses.
 
 ### 7. Status and tiers
 
@@ -65,9 +71,10 @@ A capture format (frames, IMU, timestamps) and a replay path that runs the same 
 
 ## Risks / Trade-offs
 
-- [The Eye does not stream in Follow mode with the Stabilizer off] → Observed on hardware: the camera stream is idle outside the glasses' own anchor mode. Task group 0 finds out whether a host request can start it (the vendor SDK has camera start/stop requests, ids documented in `docs/xreal-link-messages.md`), or whether the change must be re-scoped. Nothing below group 0 can be verified on hardware until this is settled.
+- [The Eye does not stream in Follow mode with the Stabilizer off] → Observed on hardware: the camera stream is idle outside the glasses' own anchor mode. Task group 0 finds out whether a host request can start it: the control port takes the SDK's request ids (8 of 8 checked ids match the public `one-xr` library), so `NRGrayscaleCameraCreate` (10047) and Start (10053, inferred) are candidates, with the field layouts in `docs/xreal-link-messages.md` section 8. Every state-changing request needs the wearer's explicit approval and is shown byte for byte first. Nothing below group 0 can be verified on hardware until this is settled; if no request works, the change is re-scoped.
 - [The Deck's CPU cannot run the estimator at 60 fps beside SteamVR] → Measure in task group 3 before integrating; reduce features/resolution, pin and nice the process, or drop to every second frame. This is the main go/no-go.
 - [The camera's field of view or exposure is poor for tracking] → The offline run on real recordings in a textured room decides; if poor, the change stops at the decoder and calibration.
+- [The factory calibration is less accurate than a fit of our own] → The checks in decision 6 score it before use, and the fitting tasks stay as the fallback.
 - [Time offset between camera and IMU is not constant or not recoverable from header bytes] → Estimate it in calibration and refine online; the 5 ms shake-test requirement catches it.
 - [Monocular scale and initialisation need motion] → Tell the user at start; the tier stays 3DoF until initialised.
 - [Position drift or jumps feel worse than no position] → The fallback requirement holds position when trust is lost, and the tier makes it visible; an off switch (`position_tracking` false) is part of the tracker's settings.
@@ -82,5 +89,6 @@ Settings the user must keep: Stabilizer off, Follow mode and full SBS as today; 
 
 ## Open Questions
 
-- The exact camera model and whether the "darker and brighter" halves are two exposures that help tracking: answered while decoding, and only affects which image the estimator is given.
+- Whether the "darker and brighter" halves are two exposures that help tracking: answered while decoding, and only affects which image the estimator is given.
+- Whether the missing rows are skipped or binned, which changes the effective vertical focal length: the grid check decides.
 - Whether the tracker can later also bound yaw drift for the presenter: a possible follow-up once position works.

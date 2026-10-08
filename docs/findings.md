@@ -420,4 +420,18 @@ follow 10-25 s, toggle-on 25-65 s, anchor 65-95 s, toggle-off 95-135 s, follow 1
 
 One read-only request (`NRGlassesGetSWVersion`, 8 bytes) sent to each of ports 52990-52995: every port accepted the connection and closed it
 10 ms after receiving the packet, without a reply; the streams were unaffected. Details and the likely reason (a missing packet header and/or
-handshake) are in `docs/xreal-link-messages.md` section 11. The anchor-mode run above is still the only observed way the camera starts.
+handshake) are in `docs/xreal-link-messages.md` section 11. **Superseded:** the control port is 52999 and requests need a transaction id (section 13); a read-only request there succeeded. The anchor-mode run above is still the only observed way the camera starts.
+
+## Camera frame geometry against the glasses' own camera size (2026-10-08)
+
+The glasses' factory calibration (`docs/xreal-link-messages.md`, section 13) gives the SLAM camera as **504 x 378** (4:3). The Eye stream's image
+is 189 rows of 1024 bytes (`tools/decode_camera_frame.py`).
+
+- **Observed, on one recorded frame** (`captures/cam_52997_sample.bin`, frame 1): the right half (512 x 189) stretched to twice its height is a
+  natural-looking 4:3 view of a room, so the stream carries every second sensor row, not the full 378.
+- **Checked and rejected:** that two image rows share each 1024-byte payload row (left half as the even rows, right half as the odd rows).
+  Adjacent-row correlation is 0.88 for the right half alone and 0.53 when interleaved, and the interleaved picture shows a row pattern.
+- **Inferred, not checked:** the factory vertical focal length (about 239 px) and principal point row (about 190) halve for the stream's pixels
+  (about 119 px and 95), and only the first 504 of the 512 stored columns are image. A printed grid decides this (task 1.2 of
+  `openspec/changes/add-6dof-camera-tracking`), as does whether the missing rows are skipped or binned.
+

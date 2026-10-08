@@ -26,7 +26,7 @@ The system SHALL decode each frame into the clean grayscale view and SHALL expos
 #### Scenario: Normal frame
 
 - **WHEN** a valid frame arrives
-- **THEN** the clean grayscale image is available with the correct width, height and aspect, and a decoded frame can be saved as a PNG for inspection
+- **THEN** the clean grayscale image is available with the correct width, height and aspect (4:3, matching the camera size the glasses report) and a decoded frame can be saved as a PNG for inspection
 
 ### Requirement: Timestamp frames on the IMU clock
 
