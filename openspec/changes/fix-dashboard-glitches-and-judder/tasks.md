@@ -1,9 +1,10 @@
-> **Status (2026-10-07, pick up here).** Done: 1.x, 2.1, 2.2, 2.3, 5.x. Measured and written up in `docs/findings.md`: the sync layer (2.4/2.5) and
-> `enableLinuxVulkanAsync` (3.x) do NOT remove the bad frames, so 4.1 does not apply. A presenter-side filter (6.x) is dropped by decision: it hides a
-> symptom, and working PCVR setups do not need it. New findings: a later `driver_xreal.running_start_ms` (8 ms or more) removes the bad frames with the
-> hold on; the hold causes the judder; Home is GPU-bound on the Deck. In progress on the Deck: `tools/judder_matrix.sh` (reprojection x hold x running
-> start x Home). Next: finish it, measure bad frames with the hold off and a later running start, then choose defaults (hold, running start, `--reproject`).
-> The sync layer is still installed on the Deck (override file may be `.off`), async may be left on in `steamvr.vrsettings`: restore both when done.
+> **Status (2026-10-07, test stopped early, Deck cleaned up).** Done: 1.x, 2.1-2.5, 3.1-3.3, 5.x. Measured and written up in `docs/findings.md`: the sync layer
+> and `enableLinuxVulkanAsync` do NOT remove the bad frames (so 4.1 as written does not apply, and the layer was uninstalled from the Deck). The presenter-side
+> filter (6.x) is dropped by decision: it hides a symptom, and working PCVR setups do not need it. What does work, measured: `driver_xreal.running_start_ms`
+> of 8 or more removes the bad frames with the hold on; the hold causes the judder; `--reproject` removes the judder (hold on or off); Home is GPU-bound on the Deck.
+> Next: run hold on + running start 8 + `--reproject` + Home on end to end (bad frames and judder), have the wearer check it, then change the defaults
+> (running start, `--reproject`; the hold default stays true), update `driver/README.md`, `tools/vr_session.sh`, `openspec/config.yaml` (7.3, 7.4) and re-review
+> specs/tasks 4.x and 6.x, which no longer match the plan. Deck state: SteamVR settings back to Home off, hold on, no async, no running_start_ms key.
 
 ## 1. Land the uncommitted diagnostics
 

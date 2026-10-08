@@ -309,8 +309,22 @@ no reprojection.** Stalls are refreshes that moved under a third of the median, 
 
 - **The hold is what makes motion judder** (about half the refreshes repeat an image with Home off), and a later running start does not
   change that. Turning it off halves the stalls, but with Home on 15-24% of refreshes still double, from SteamVR's GPU-bound frame rate.
-- **Not yet measured:** the same matrix with `--reproject` (`tools/judder_matrix.sh`, results in `/tmp/judder-results.txt` on the Deck),
-  and the bad-frame count with the hold off and a later running start (the 8-12 ms result above is with the hold on).
+**With `--reproject` (rotational reprojection in the presenter), same method, one capture per cell:**
+
+| | Home off stalls / doubles | Home on stalls / doubles |
+|---|---|---|
+| hold on, running start 2 ms | 16% / 3% | 13% / 1% |
+| hold on, running start 8 ms | 18% / 1% | 11% / 4% |
+| hold off, running start 2 ms | 17% / 4% | 14% / 4% |
+
+- **Reprojection removes the judder, with the hold on or off.** Doubles fall from 16-20% to 1-4% and the stalls from 22-56% to 11-18%;
+  the remaining stalls are the same with the hold off, so they are not the hold. The cell for hold off at running start 8 ms was not run (the
+  matrix was stopped), and these are single captures, so treat differences of a few percent as noise. Reprojection does not change SteamVR's output,
+  so it should not change the bad-frame counts above, but that combination (reprojection on, hold on, running start 8 ms, Home on) has not been run end to end.
+- **Candidate default, not yet adopted:** hold on, `running_start_ms` 8, `--reproject` on. That gave 0 bad frames in two sweeps (without reprojection)
+  and the smoothest displayed motion. Still to check: the wearer's view (nothing here replaces it), latency cost of the 8 ms running start, and
+  reprojection's own artefacts (the visual result of `--reproject` is not yet checked by a person).
+- **Not yet measured:** bad frames with the hold off and a later running start.
 
 **Present wait** times out when the presenter starts before SteamVR and then never recovers on the newest present id, because while the
 fallback is active the queue runs up to the swapchain depth ahead of the display. The presenter now probes an id from 4 presents back every
