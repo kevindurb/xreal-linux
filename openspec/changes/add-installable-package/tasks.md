@@ -40,14 +40,14 @@
 - [x] 5.8 `status`, with reprojection on by default and the existing environment options passed to the service. Verify: on the Deck `status` reports the units, driver, glasses, recorded mode and last session; the service runs with reprojection on.
 - [x] 5.9 Make `tools/doctor.sh` and `tools/vr_session.sh` thin wrappers around the same logic where practical, stopping the units first when they are enabled. Verify: both still pass their existing checks from a checkout, with and without the units enabled.
 - [x] 5.10 `uninstall`: disable and remove the units, restore a recorded mode if one is pending, deregister the driver, restore the changed settings keys, remove the installed files. Verify: on a clean Deck account, setup, fix, uninstall returns the home directory, the settings file and the driver registry to their earlier contents, apart from the state directory.
-- [ ] 5.11 Write the user quick start (`README.md` top section, replacing the "exploration" status) with the Deck and PC paths. Verify: following only the quick start on a clean Deck user account reaches a passing `check` (user check).
+- [x] 5.11 Write the user quick start (`README.md` top section, replacing the "exploration" status) with the Deck and PC paths. Verify: following only the quick start on a clean Deck user account reaches a passing `check` (user check).
 
 ## 6. CI release
 
-- [ ] 6.1 A workflow that builds the AppImage from a tag in the pinned image, runs the symbol check and attaches the file to the release. Verify: a test tag on a fork or branch produces the AppImage and a failing symbol check fails the workflow.
+- [x] 6.1 A workflow that builds the AppImage from a tag in the pinned image, runs the symbol check and attaches the file to the release. Verify: a test tag on a fork or branch produces the AppImage and a failing symbol check fails the workflow.
 
 ## 7. Integration
 
-- [ ] 7.1 End-to-end on a clean Deck user account (desktop mode) and one PC distro: download the AppImage, `setup`, `fix`, start SteamVR with the glasses in 2D, use the dashboard for a minute, quit SteamVR, `uninstall`. Verify: a user check against the scenarios in the specs, with SteamVR delivering 60 new frames/s, the glasses switching to SBS on start and back to their earlier 2D mode on quit (the DRM mode before and after compared), usable as a plain monitor before and after, and the uninstall leaving nothing behind.
+- [x] 7.1 End-to-end on a clean Deck user account (desktop mode) and one PC distro: download the AppImage, `setup`, `fix`, start SteamVR with the glasses in 2D, use the dashboard for a minute, quit SteamVR, `uninstall`. Verify: a user check against the scenarios in the specs, with SteamVR delivering 60 new frames/s, the glasses switching to SBS on start and back to their earlier 2D mode on quit (the DRM mode before and after compared), usable as a plain monitor before and after, and the uninstall leaving nothing behind.
 - [ ] 7.2 Experiment (record only): are the user units active in the Deck's game mode, and can the service get a window on the glasses' output there. Verify: the result, positive or negative, is written to `docs/findings.md` and `docs/open-questions.md`; no promise is made in the README either way.
 - [ ] 7.3 Experiment (record only): Flatpak Steam loading the driver from the data directory. Verify: SteamVR activates the driver (log line), or the limitation is recorded and `check` reports it.

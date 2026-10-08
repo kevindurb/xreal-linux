@@ -612,3 +612,7 @@ The config's `display.target_q_left_display` and `target_q_right_display` (Hamil
 - A first version of the driver counted its handshake wait in 50 ms iterations; `PollMessages` returns as soon as the presenter sends a pose (every few ms), so the 30 s wait ran out after 1.8 s and the driver reported no headset. Fixed with a real-time deadline.
 - The window must not be given fullscreen/windowed changes before the compositor maps it: right after creation `current_monitor()` is `None`, and acting on that (leaving fullscreen) put the window on the internal screen; the follow logic now waits for a known monitor.
 - **Display mode round trip:** with the glasses in `1920x1080 1920x1200` (2D) before, the mode list after the session is identical, also after `kill -9` of the presenter (the unit's `ExecStopPost` restores) and with the glasses already in SBS (nothing is sent).
+
+### First release walkthrough (2026-10-08, v0.1.0-rc1)
+
+The wearer downloaded the AppImage from the release, ran the guided setup, opened SteamVR and it worked. Not tried by hand: unplugging the glasses and sleep/wake during a session (only simulated with the setter, see the mid-session drop test). The failing-symbol-check path of the workflow was not exercised; `build.sh` exits non-zero on it.
