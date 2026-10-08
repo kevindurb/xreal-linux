@@ -19,6 +19,14 @@ const GETTER_BODY: [u8; 2] = [0x18, 0x00];
 const SBS_BODY: [u8; 4] = [0x1a, 0x02, 0x08, 0x01];
 const TWO_D_BODY: [u8; 4] = [0x1a, 0x02, 0x08, 0x00];
 const HOSTS: [&str; 2] = ["169.254.2.1:52999", "169.254.1.1:52999"];
+
+/// The control port addresses to try; `XREAL_CONTROL_ADDR` (a test hook: a dead or silent port) replaces them.
+fn hosts() -> Vec<String> {
+    match std::env::var("XREAL_CONTROL_ADDR") {
+        Ok(a) if !a.is_empty() => vec![a],
+        _ => HOSTS.iter().map(|h| h.to_string()).collect(),
+    }
+}
 /// Bounds the setter for glasses that keep reverting to the regular mode.
 const MAX_SBS_SETS: u32 = 3;
 
@@ -220,6 +228,146 @@ fn load_cache() -> Option<String> {
     std::fs::read_to_string(newest.path()).ok()
 }
 
+/// Where the presenter keeps its records: `$XDG_STATE_HOME/xreal-linux`, else `~/.local/state/xreal-linux`.
+pub fn state_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("XDG_STATE_HOME").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(d).join("xreal-linux"));
+    }
+    Some(PathBuf::from(std::env::var_os("HOME")?).join(".local").join("state").join("xreal-linux"))
+}
+
+/// The display mode the glasses were in before this presenter first switched them, recorded before the first setter is sent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Previous {
+    /// A regular 2D mode: restored with the setter value 0.
+    TwoD,
+    /// Already full SBS: nothing is sent at the end.
+    Sbs,
+}
+
+const RECORD_FILE: &str = "display-mode";
+
+impl Previous {
+    fn word(self) -> &'static str {
+        match self {
+            Previous::TwoD => "was-2d",
+            Previous::Sbs => "was-sbs",
+        }
+    }
+}
+
+pub fn read_record(dir: &std::path::Path) -> Option<Previous> {
+    match std::fs::read_to_string(dir.join(RECORD_FILE)).ok()?.trim() {
+        "was-2d" => Some(Previous::TwoD),
+        "was-sbs" => Some(Previous::Sbs),
+        _ => None,
+    }
+}
+
+fn write_record(dir: &std::path::Path, prev: Previous) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{RECORD_FILE}.tmp"));
+    std::fs::write(&tmp, format!("{}\n", prev.word()))?;
+    std::fs::rename(tmp, dir.join(RECORD_FILE))
+}
+
+pub fn clear_record(dir: &std::path::Path) {
+    let _ = std::fs::remove_file(dir.join(RECORD_FILE));
+}
+
+/// What to record when the input mode reads `mode` and a record may already exist. A 2D reading always records "was 2D" (it describes the
+/// glasses now); a full SBS reading records "was SBS" only if nothing is recorded, so an unrestored "was 2D" survives a crash.
+fn record_for_mode(mode: u64, existing: Option<Previous>) -> Option<Previous> {
+    match (mode, existing) {
+        (0, _) => Some(Previous::TwoD),
+        (_, None) => Some(Previous::Sbs),
+        (_, Some(_)) => None,
+    }
+}
+
+/// What the restore does once it has read the input mode.
+#[derive(Debug, PartialEq)]
+enum RestorePlan {
+    Send,
+    AlreadyDone,
+    Unknown,
+}
+
+fn plan_restore(mode: Option<u64>) -> RestorePlan {
+    match mode {
+        Some(0) => RestorePlan::AlreadyDone,
+        Some(_) => RestorePlan::Send,
+        None => RestorePlan::Unknown,
+    }
+}
+
+/// How a restore ended; `Pending` leaves the record in place so the check can report it.
+#[derive(Debug, PartialEq)]
+pub enum Restore {
+    NothingRecorded,
+    NothingToSend,
+    Restored,
+    Pending(String),
+}
+
+/// Set the glasses back to the 2D mode recorded before the session, once, with the setter value 0. "Was SBS" and no record send nothing.
+/// The record is cleared only when the glasses are known to be in 2D (or were never switched), so a failure is visible to `check`.
+pub fn restore_previous_mode() -> Restore {
+    let Some(dir) = state_dir() else { return Restore::NothingRecorded };
+    match read_record(&dir) {
+        None => return Restore::NothingRecorded,
+        Some(Previous::Sbs) => {
+            clear_record(&dir);
+            return Restore::NothingToSend;
+        }
+        Some(Previous::TwoD) => {}
+    }
+    let mut last = String::from("could not reach the glasses' control port");
+    for attempt in 0..RESTORE_CONNECT_TRIES {
+        let hosts = hosts();
+        let addr = hosts[attempt as usize % hosts.len()].as_str();
+        let Ok(stream) = TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(2)) else {
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        };
+        let mut c = Conn { stream, buf: Vec::new(), last_temperature_log: None };
+        let outcome = restore_on(&mut c);
+        match &outcome {
+            Restore::Restored | Restore::NothingToSend => clear_record(&dir),
+            _ => {}
+        }
+        return outcome;
+    }
+    println!("[control +{:.1}s] restore: {last}; the record stays", uptime_s());
+    last.insert_str(0, "restore: ");
+    Restore::Pending(last)
+}
+
+/// Connection attempts the restore makes before giving up (each bounded by a 2 s connect timeout).
+const RESTORE_CONNECT_TRIES: u32 = 6;
+
+fn restore_on(c: &mut Conn) -> Restore {
+    let mode = c.request(GET_INPUT_MODE, 2, &GETTER_BODY, Duration::from_secs(5)).as_deref().and_then(reply_value);
+    match plan_restore(mode) {
+        RestorePlan::AlreadyDone => {
+            println!("[control +{:.1}s] restore: the glasses are already in a 2D mode", uptime_s());
+            Restore::NothingToSend
+        }
+        RestorePlan::Unknown => Restore::Pending("restore: no usable input mode reply".into()),
+        RestorePlan::Send => {
+            println!("[control +{:.1}s] restore: sending NRDpSetInputMode = 2D", uptime_s());
+            match c.request(SET_INPUT_MODE, 4, &TWO_D_BODY, Duration::from_secs(5)).as_deref().map(reply_status) {
+                Some(Some(0)) => {
+                    println!("[control +{:.1}s] restore: accepted", uptime_s());
+                    Restore::Restored
+                }
+                Some(Some(code)) => Restore::Pending(format!("restore: the setter was rejected with status {code}")),
+                _ => Restore::Pending("restore: no usable reply to the setter".into()),
+            }
+        }
+    }
+}
+
 struct Conn {
     stream: TcpStream,
     buf: Vec<u8>,
@@ -341,6 +489,13 @@ impl Conn {
     /// Read the input mode and, only if the plan says so, set full side-by-side once. Returns whether the setter was sent.
     fn ensure_sbs(&mut self, sent_in_run: u32) -> bool {
         let mode = self.request(GET_INPUT_MODE, 2, &GETTER_BODY, Duration::from_secs(5)).as_deref().and_then(reply_value);
+        if let (Some(m), Some(dir)) = (mode, state_dir()) {
+            if let Some(prev) = record_for_mode(m, read_record(&dir)) {
+                if let Err(e) = write_record(&dir, prev) {
+                    eprintln!("cannot record the display mode in {}: {e}", dir.display());
+                }
+            }
+        }
         match plan_sbs(mode, false, sent_in_run) {
             SbsPlan::Send => {
                 println!("[control +{:.1}s] input mode is regular; sending NRDpSetInputMode = side by side ({} of at most {} this run)", uptime_s(), sent_in_run + 1, MAX_SBS_SETS);
@@ -385,7 +540,8 @@ pub fn run(shared: SharedCalibration, set_sbs: bool, status: Arc<crate::link::Gl
     }
     let (mut which, mut sbs_sent) = (0, 0u32);
     loop {
-        let addr = HOSTS[which % HOSTS.len()];
+        let hosts = hosts();
+        let addr = hosts[which % hosts.len()].as_str();
         which += 1;
         let Ok(stream) = TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(2)) else {
             status.set_reachable(false);
@@ -427,7 +583,8 @@ pub fn set_sbs_once() -> bool {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut which = 0;
     while std::time::Instant::now() < deadline {
-        let addr = HOSTS[which % HOSTS.len()];
+        let hosts = hosts();
+        let addr = hosts[which % hosts.len()].as_str();
         which += 1;
         let Ok(stream) = TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(2)) else {
             std::thread::sleep(Duration::from_millis(500));
@@ -585,6 +742,81 @@ mod tests {
         assert_eq!(reply_status(&[0x22, 0x00]), Some(0));
         assert_eq!(reply_status(&[0x22, 0x03, 0x08, 0x91, 0x4e]), Some(10001));
         assert_eq!(reply_status(&[0x00]), None);
+    }
+
+    #[test]
+    fn the_previous_mode_is_recorded_before_the_setter_and_survives_a_crash() {
+        assert_eq!(record_for_mode(0, None), Some(Previous::TwoD));
+        assert_eq!(record_for_mode(0, Some(Previous::Sbs)), Some(Previous::TwoD));
+        assert_eq!(record_for_mode(1, None), Some(Previous::Sbs));
+        assert_eq!(record_for_mode(1, Some(Previous::TwoD)), None, "an unrestored 2D record is kept");
+        assert_eq!(record_for_mode(1, Some(Previous::Sbs)), None);
+    }
+
+    #[test]
+    fn the_record_round_trips_and_clears() {
+        let dir = std::env::temp_dir().join(format!("xreal-record-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(read_record(&dir), None);
+        write_record(&dir, Previous::TwoD).unwrap();
+        assert_eq!(read_record(&dir), Some(Previous::TwoD));
+        write_record(&dir, Previous::Sbs).unwrap();
+        assert_eq!(read_record(&dir), Some(Previous::Sbs));
+        clear_record(&dir);
+        assert_eq!(read_record(&dir), None);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(RECORD_FILE), "garbage").unwrap();
+        assert_eq!(read_record(&dir), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A glasses stand-in: answers the input mode getter with `mode` and every setter with `setter_reply`, and reports what it was asked.
+    fn fake_glasses(mode: u8, setter_reply: Vec<u8>) -> (Conn, std::sync::mpsc::Receiver<(u16, Vec<u8>)>) {
+        let (c, mut server) = pair();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            while let Ok(n) = server.read(&mut buf) {
+                if n < 10 {
+                    break;
+                }
+                let id = u16::from_be_bytes([buf[0], buf[1]]);
+                let txid = (u32::from_be_bytes(buf[6..10].try_into().unwrap()) & !TX_TOP_BIT).to_be_bytes(); // the glasses answer with the top bit cleared
+                let body = if id == GET_INPUT_MODE { if mode == 0 { vec![0x22, 0x00] } else { vec![0x22, 0x02, 0x10, mode] } } else { setter_reply.clone() };
+                let mut out = id.to_be_bytes().to_vec();
+                out.extend_from_slice(&((4 + body.len()) as u32).to_be_bytes());
+                out.extend_from_slice(&txid);
+                out.extend_from_slice(&body);
+                let _ = tx.send((id, buf[10..n].to_vec()));
+                let _ = server.write_all(&out);
+            }
+        });
+        (c, rx)
+    }
+
+    #[test]
+    fn restore_sets_2d_once_when_the_glasses_are_in_sbs() {
+        let (mut c, asked) = fake_glasses(1, vec![0x22, 0x00]);
+        assert_eq!(restore_on(&mut c), Restore::Restored);
+        assert_eq!(asked.recv().unwrap(), (GET_INPUT_MODE, GETTER_BODY.to_vec()));
+        assert_eq!(asked.recv().unwrap(), (SET_INPUT_MODE, TWO_D_BODY.to_vec()));
+        assert!(asked.recv_timeout(Duration::from_millis(100)).is_err(), "no third request");
+    }
+
+    #[test]
+    fn restore_sends_nothing_when_the_glasses_are_already_2d() {
+        let (mut c, asked) = fake_glasses(0, vec![0x22, 0x00]);
+        assert_eq!(restore_on(&mut c), Restore::NothingToSend);
+        assert_eq!(asked.recv().unwrap().0, GET_INPUT_MODE);
+        assert!(asked.recv_timeout(Duration::from_millis(100)).is_err());
+    }
+
+    #[test]
+    fn a_rejected_restore_stays_pending_and_is_not_retried() {
+        let (mut c, asked) = fake_glasses(1, vec![0x22, 0x03, 0x08, 0x91, 0x4e]);
+        assert!(matches!(restore_on(&mut c), Restore::Pending(m) if m.contains("10001")));
+        assert_eq!(asked.iter().take(2).count(), 2);
+        assert!(asked.recv_timeout(Duration::from_millis(100)).is_err());
     }
 
     #[test]

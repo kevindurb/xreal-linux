@@ -4,7 +4,7 @@
 //! glasses really show a different image to each eye in their SBS mode. It will grow into the thing that imports
 //! SteamVR's per-eye textures and presents them.
 //!
-//! usage: xreal-presenter [--monitor NAME] [--socket-name NAME] [--service] [--reproject] [--eye-rotation | --eye-rotation-reversed] [--test-grid] [--no-set-sbs | --set-sbs-only] [--no-imu-calibration] [--print-calibration] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default output: the one whose EDID is the glasses')
+//! usage: xreal-presenter [--monitor NAME] [--socket-name NAME] [--service] [--restore-display] [--reproject] [--eye-rotation | --eye-rotation-reversed] [--test-grid] [--no-set-sbs | --set-sbs-only] [--no-imu-calibration] [--print-calibration] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default output: the one whose EDID is the glasses')
 //!
 //! Left half of the screen = left eye (red tint), right half = right eye (blue tint). A green square slides across
 //! each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
@@ -48,6 +48,9 @@ fn sync_file_pending(fd: RawFd, timeout_ms: i32) -> bool {
 
 /// fd of the connection to the driver (or -1); lets the render thread send vsync messages.
 static DRIVER_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// When the driver last connected, until the first frame from it has been presented (the cold-start measurement).
+static FIRST_CONNECT: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// `--socket-name`: the abstract socket to listen on instead of `xreal-presenter-<uid>`.
 static SOCKET_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -94,7 +97,7 @@ struct Shared {
     connected: bool,
 }
 
-fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>, calibration: glasses::SharedCalibration, glasses_status: Arc<link::GlassesStatus>) {
+fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>, calibration: glasses::SharedCalibration, glasses_status: Arc<link::GlassesStatus>, monitor_override: Option<String>) {
     unsafe {
         // Abstract socket (leading NUL): visible from SteamVR's pressure-vessel container, unlike a file path.
         let name = SOCKET_NAME.get().cloned().unwrap_or_else(|| link::default_socket_name(libc::getuid()));
@@ -140,6 +143,7 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
                 continue;
             }
             println!("driver connected (pid {})", cred.pid);
+            *FIRST_CONNECT.lock().unwrap() = Some(Instant::now());
             DRIVER_FD.store(c, Ordering::Relaxed);
             shared.lock().unwrap().connected = true;
             // Stream the head pose to the driver (type 4: [4, ts_lo, ts_hi, w, x, y, z as f32 bits, valid, wx, wy, wz as f32 bits, host_ns_lo, host_ns_hi]).
@@ -214,13 +218,20 @@ fn link_thread(shared: Arc<Mutex<Shared>>, pose: Arc<Mutex<tracking::PoseState>>
                             libc::send(c, w.as_ptr() as *const _, 64, libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT);
                         }
                     } else {
-                        // The reply waits for the glasses, so it is sent from its own thread and the driver's later messages are not held up.
-                        let status = glasses_status.clone();
+                        // The reply waits for the glasses (and for the setter to take effect), so it is sent from its own thread and the
+                        // driver's later messages are not held up.
+                        let (status, ov) = (glasses_status.clone(), monitor_override.clone());
                         std::thread::spawn(move || {
-                            let present = status.wait_reachable(std::time::Duration::from_secs(6));
-                            let reason = if present { link::REASON_OK } else { link::REASON_GLASSES_UNREACHABLE };
+                            let started = Instant::now();
+                            let (present, reason) = if !status.wait_reachable(std::time::Duration::from_secs(6)) {
+                                (false, link::REASON_GLASSES_UNREACHABLE)
+                            } else if wait_for_full_sbs(&ov, SBS_WAIT) {
+                                (true, link::REASON_OK)
+                            } else {
+                                (false, link::REASON_NOT_SBS)
+                            };
                             if present {
-                                println!("telling the driver the glasses are present");
+                                println!("telling the driver the glasses are present (after {:.1} s)", started.elapsed().as_secs_f32());
                             } else {
                                 eprintln!("telling the driver there are no usable glasses: {}", link::reason_text(reason));
                             }
@@ -1056,6 +1067,11 @@ impl Gfx {
         self.device.reset_fences(&[self.in_flight])?;
         // Chosen after acquire, which can block for a refresh, so the frame is as fresh as possible when the GPU reads it.
         let eyes = self.prepare_eyes(shared);
+        if eyes.is_some() {
+            if let Some(t) = FIRST_CONNECT.lock().unwrap().take() {
+                println!("first SteamVR frame presented {:.2} s after the driver connected", t.elapsed().as_secs_f32());
+            }
+        }
         if eyes.is_none() && shared.lock().unwrap().connected {
             self.fallbacks += 1;
         }
@@ -1242,9 +1258,36 @@ fn settle() -> std::time::Duration {
     std::time::Duration::from_millis(std::env::var("XREAL_SETTLE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000))
 }
 
+fn report_restore(r: glasses::Restore) {
+    match r {
+        glasses::Restore::NothingRecorded => println!("restore: no display mode was recorded"),
+        glasses::Restore::NothingToSend => println!("restore: nothing to send"),
+        glasses::Restore::Restored => println!("restore: the glasses are back in their 2D mode"),
+        glasses::Restore::Pending(why) => eprintln!("{why}; the record stays, run `check` or restore it by hand"),
+    }
+}
+
 /// The connector the glasses are on right now: `--monitor`, else the output whose EDID is the glasses'.
 fn glasses_output(override_name: &Option<String>) -> Option<String> {
     override_name.clone().or_else(|| output::find_glasses_connector(std::path::Path::new("/sys/class/drm")))
+}
+
+/// How long the presenter waits, after the glasses answer, for their output to offer the single 3840x1080 mode.
+const SBS_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn output_is_full_sbs(override_name: &Option<String>) -> bool {
+    glasses_output(override_name).as_deref().and_then(glasses::read_modes).is_some_and(|m| m == ["3840x1080"])
+}
+
+fn wait_for_full_sbs(override_name: &Option<String>, timeout: std::time::Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while !output_is_full_sbs(override_name) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    true
 }
 
 /// Why the window should not exist right now, or None if it should.
@@ -1384,7 +1427,8 @@ impl ApplicationHandler for App {
         }
         if self.service && self.disconnected_since.is_some_and(|t| t.elapsed() >= IDLE_GRACE) {
             self.close_window("the driver disconnected");
-            println!("the driver has been gone for {} s; exiting", IDLE_GRACE.as_secs());
+            println!("the driver has been gone for {} s; restoring the glasses' previous mode and exiting", IDLE_GRACE.as_secs());
+            report_restore(glasses::restore_previous_mode());
             el.exit();
             return;
         }
@@ -1394,7 +1438,7 @@ impl ApplicationHandler for App {
             self.last_output_check = Some(Instant::now());
             let output = glasses_output(&self.monitor_override);
             let listed = output.as_deref().is_some_and(|n| el.available_monitors().any(|m| m.name().as_deref() == Some(n)));
-            let sbs = output.as_deref().and_then(glasses::read_modes).is_some_and(|m| m == ["3840x1080"]);
+            let sbs = output_is_full_sbs(&self.monitor_override);
             let blocker = window_blocker(connected || self.standalone, output.as_deref(), listed, sbs);
             if blocker != self.last_reason {
                 println!("[window +{:.1}s] {}", glasses::uptime_s(), blocker.as_deref().unwrap_or("the driver is connected and the glasses' output is in full side by side"));
@@ -1462,6 +1506,12 @@ fn main() {
     while let Some(a) = args.next() {
         if a == "--monitor" {
             monitor_override = Some(args.next().expect("--monitor needs a name"));
+        } else if a == "--restore-display" {
+            // For the unit's ExecStopPost and for uninstall: put the glasses back in the 2D mode recorded before the session, then exit.
+            let r = glasses::restore_previous_mode();
+            let pending = matches!(r, glasses::Restore::Pending(_));
+            report_restore(r);
+            std::process::exit(if pending { 1 } else { 0 });
         } else if a == "--service" {
             service = true;
         } else if a == "--socket-name" {
@@ -1529,7 +1579,7 @@ fn main() {
         let cal = calibration.clone();
         std::thread::spawn(move || tracking::run(p, cal, use_imu_calibration));
     }
-    { let (sh, p) = (shared.clone(), pose.clone()); let cal = calibration.clone(); let gs = glasses_status.clone(); std::thread::spawn(move || link_thread(sh, p, cal, gs)); }
+    { let (sh, p) = (shared.clone(), pose.clone()); let cal = calibration.clone(); let gs = glasses_status.clone(); let mo = monitor_override.clone(); std::thread::spawn(move || link_thread(sh, p, cal, gs, mo)); }
     let standalone = test_grid || sim_pose;
     let mut app = App { monitor_override, window: None, gfx: None, start: Instant::now(), frames: 0, last_report: Instant::now(), shared, last_monitor_check: Instant::now(), last_output_check: None, last_open_failure: None, move_attempts: 0, reproject, test_grid, dump_dir, dump_count, pose: pose_for_app, service, standalone, ever_connected: false, disconnected_since: None, last_reason: None, wanted_since: None };
     el.run_app(&mut app).expect("run");

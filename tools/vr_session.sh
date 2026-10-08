@@ -49,7 +49,7 @@ case "${1:-status}" in
     systemctl --user stop xreal-presenter 2>/dev/null; systemctl --user reset-failed xreal-presenter 2>/dev/null; rm -f "$LOG"
     launch_presenter
     echo "presenter restarted with: $ARGS" ;;
-  stop) stop; echo stopped ;;
+  stop) stop; "$BIN" --restore-display 2>&1 | tail -3; echo stopped ;;   # puts the glasses back in the 2D mode they were in before `start`, if it switched them
   log) tail -n 40 "$LOG" ;;
   status)
     echo "presenter: $(systemctl --user is-active xreal-presenter)"
