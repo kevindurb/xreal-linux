@@ -323,7 +323,9 @@ no reprojection.** Stalls are refreshes that moved under a third of the median, 
   so it should not change the bad-frame counts above, but that combination (reprojection on, hold on, running start 8 ms, Home on) has not been run end to end.
 - **Adopted default, confirmed by the wearer ("perfect": no flicker, smooth motion, no complaints about latency or warping), Home on:** hold on, `running_start_ms` 8, `--reproject` on. That gave 0 bad frames in two sweeps (without reprojection)
   and the smoothest displayed motion.
-- **Not yet measured:** bad frames with the hold off and a later running start.
+- **The hold is still needed.** With the hold off, a later running start does not remove the bad frames (1920x1080, 240-frame sweeps, two captures each):
+  running start 8 ms: Home on 1 and 6, Home off 3 and 8; running start 12 ms: Home on 2 and 1, Home off 11 and 5. So the fix is the combination:
+  hold on, running start 8 ms or more, and reprojection for the smoothness the hold costs.
 
 **Present wait** times out when the presenter starts before SteamVR and then never recovers on the newest present id, because while the
 fallback is active the queue runs up to the swapchain depth ahead of the display. The presenter now probes an id from 4 presents back every
@@ -333,4 +335,5 @@ fallback is active the queue runs up to the swapchain depth ahead of the display
 
 **Render size (2026-10-07):** with the defaults above (hold on, running start 8 ms, `--reproject`) and Home on, the Deck's GPU averaged about 56% at
 1280x720 and 58% at 1920x1080 with the head still, SteamVR delivered 60 new frames/s, and the wearer called 1920x1080 per eye "buttery". 1920x1080
-is now the driver default. Heavier content than Home has not been tried.
+is now the driver default. Under the dashboard sweep capture at 1920x1080 (the capture's own copies add some load) the GPU averaged
+about 70% with Home on (90th percentile and peak 100%) and 20-29% with Home off. Heavier content than Home has not been tried.
