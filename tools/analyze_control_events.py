@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Find what precedes the glasses dropping from full side-by-side to 2D, from a presenter log.
 
-usage: analyze_control_events.py /tmp/presenter.log [--window 30]
+usage: analyze_control_events.py ~/.local/state/xreal-linux/presenter.log [--window 30]
 
 Reads the lines the presenter prints (both stamped with seconds since it started):
     [control +12.3s] event 10045 (2 bytes) 1802

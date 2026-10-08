@@ -105,7 +105,7 @@ What exists (presenter tests 30, python 28; what is marked built 2026-10-08 belo
 
 Open:
 0. **First automatic SBS run:** with the glasses in the regular mode and no VR session running, approve the setter bytes above, then `tools/vr_session.sh start`; check that SteamVR starts after the mode changes and that the presenter's window is on the glasses without a restart.
-1. **The 2D drop-outs:** needs a long session. `tools/vr_session.sh start`, leave it running (worn or on the desk), then on the Deck `python3 ~/xreal-linux/tools/analyze_control_events.py /tmp/presenter.log`. `NRProximitySetEnable` (10009) only with approval.
+1. **The 2D drop-outs:** needs a long session. `tools/vr_session.sh start`, leave it running (worn or on the desk), then on the Deck `python3 ~/xreal-linux/tools/analyze_control_events.py ~/.local/state/xreal-linux/presenter.log`. `NRProximitySetEnable` (10009) only with approval.
 2. **Vertical field of view:** the 0.2190 half tangent still assumes a 1080-row picture centred in 1200 rows; the wearer sees no black bars, and the bottom border is hidden by the lens edge. Not settled, no known fix.
 3. `--eye-rotation` needs the wearer check described in `presenter/README.md`.
 4. The other proposed changes, `add-installable-package` (needs a discussion of what the package is and contains) and `support-other-gpus`, have not been started.

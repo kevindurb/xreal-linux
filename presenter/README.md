@@ -59,4 +59,4 @@ The config gives each display's orientation relative to the IMU. On the tested u
 
 ## Display-mode log
 
-The presenter logs `[display +T s] modes: ...` whenever the connector's mode list changes, on the same clock as `[control +T s] event ...`. After a session: `python3 tools/analyze_control_events.py /tmp/presenter.log` lists, for each drop from full SBS to 2D, the events in the 30 s before it.
+The presenter logs `[display +T s] modes: ...` whenever the connector's mode list changes, on the same clock as `[control +T s] event ...`. After a session: `python3 tools/analyze_control_events.py ~/.local/state/xreal-linux/presenter.log` lists, for each drop from full SBS to 2D, the events in the 30 s before it.

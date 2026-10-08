@@ -584,3 +584,11 @@ The config's `display.target_q_left_display` and `target_q_right_display` (Hamil
 ### Removed: the factory distortion grid and the magnetometer calibration code (2026-10-08)
 
 `--factory-distortion`, `--factory-distortion-reversed`, `--mag-calibrate`, `--mag-report` and `--mag-yaw` (with `presenter/src/magcal.rs`, the grid upload in the warp pass and the magnetometer parsing) were removed after the two negative results recorded above. They can be recovered from git history at commit `33d4419`.
+
+### Build baseline for the release: the Steam Runtime 3 (sniper) SDK (2026-10-08, measured on the Deck)
+
+- SteamVR's `vrserver` on the Deck runs in "Steam Runtime 3 (sniper)" (`/proc/PID/root/etc/os-release`) but mapped the **host's** `libc.so.6` (`/run/host/usr/lib64/`), so the container uses the newer host glibc when it has one. The sniper floor is glibc 2.31; a driver must not need more on a host that does not provide it.
+- `registry.gitlab.steamos.cloud/steamrt/sniper/sdk` (glibc 2.31, g++ 10.3) builds the driver with `driver/build.sh` unchanged: needs `libpthread`, `libc`, `ld-linux` only, **highest `GLIBC_2.30`**. The earlier Fedora 44 build needed `GLIBC_2.36` and `GLIBC_2.38`.
+- SteamVR on the Deck loaded the sniper-built driver (`Loaded server driver xreal ... driver_xreal.so`, `HMD activated`, `connected to presenter`) and ran at 60.0 new SteamVR frames/s.
+- The presenter built in the same SDK (rustup minimal profile, `cargo build --release`) needs libdl, libgcc_s, libpthread, libm, libc; **highest `GLIBC_2.30`**. On the Deck it presented SteamVR at 60.0 fps / 60.0 new frames/s (reprojection on). Run on the Fedora 44 Kinoite dev machine it links and starts, then stops because that machine has no display (`neither WAYLAND_DISPLAY nor ... is set`): **a test pattern on a second distro is not yet shown.**
+- `debian:bullseye-slim` as the alternative base could not be tried: `apt-get` in the rootless container installed nothing, so there was no `g++`. Not a finding about the base; the SDK was chosen because it is Steam's own runtime.

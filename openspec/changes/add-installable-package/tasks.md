@@ -3,9 +3,9 @@
 ## 1. Reproducible builds on an old-glibc baseline
 
 - [ ] 1.1 Pick the build base: build the driver and the presenter on the Steam Runtime SDK and on an older distro image; run each on the Deck and one other distro. Verify: SteamVR activates the driver (log line) and the presenter shows its test pattern for the chosen base; the choice and the failures of the others are recorded in `docs/findings.md`.
-- [ ] 1.2 Pin the build image in the repo and add one script that builds both pieces into `dist/`. Verify: a clean checkout builds on the Deck and on a PC with a single command, producing the same file list.
-- [ ] 1.3 Symbol-version check: list the driver's glibc symbol versions and fail when one exceeds the baseline. Verify: it passes on the real build and fails on a build with a deliberately newer symbol (a test fixture).
-- [ ] 1.4 Remove the hard-coded repo path and `/tmp/presenter.log` from the scripts, driver and presenter. Verify: `grep` finds neither in the shipped files; presenter output appears in the journal when run as a unit.
+- [x] 1.2 Pin the build image in the repo and add one script that builds both pieces into `dist/`. Verify: a clean checkout builds on the Deck and on a PC with a single command, producing the same file list.
+- [x] 1.3 Symbol-version check: list the driver's glibc symbol versions and fail when one exceeds the baseline. Verify: it passes on the real build and fails on a build with a deliberately newer symbol (a test fixture).
+- [x] 1.4 Remove the hard-coded repo path and `/tmp/presenter.log` from the scripts, driver and presenter. Verify: `grep` finds neither in the shipped files; presenter output appears in the journal when run as a unit.
 
 ## 2. Handshake: protocol version and `glasses_present`
 

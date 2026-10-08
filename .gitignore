@@ -5,3 +5,5 @@ __pycache__/
 .openvr/
 xreal/bin/
 presenter/target/
+build-out/
+dist/

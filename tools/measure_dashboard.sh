@@ -25,7 +25,7 @@ sleep 3
 kill "$SAMPLER" 2>/dev/null
 echo "gpu busy during capture: $(sort -n "$DUMP.gpu" | awk '{a[NR]=$1; s+=$1} END{printf "avg %.0f%%, p90 %d%%, max %d%%", s/NR, a[int(NR*0.9)], a[NR]}')" >>"$OUT"; rm -f "$DUMP.gpu"
 "$VRCMD" --stats 2>&1 | head -15 >>"$OUT"
-grep "new SteamVR frames" /tmp/presenter.log | tail -6 >>"$OUT"
+grep "new SteamVR frames" "${XDG_STATE_HOME:-$HOME/.local/state}/xreal-linux/presenter.log" | tail -6 >>"$OUT"
 /usr/bin/podman run --rm -v "$DUMP":"$DUMP":ro,z -v "$HERE/tools":/tools:ro,z registry.fedoraproject.org/fedora:44 \
   bash -c "dnf -y -q install python3-numpy >/dev/null 2>&1; python3 /tools/find_bad_frames.py $DUMP; python3 /tools/judder_report.py $DUMP" >>"$OUT" 2>&1 && cp "$DUMP/meta.csv" "/tmp/meta-$LABEL.csv" && rm -rf "$DUMP"
 grep -h "steamvr-compositor-sync" "$HOME/.local/share/Steam/logs/vrcompositor-linux.txt" 2>/dev/null | tail -2 >>"$OUT"

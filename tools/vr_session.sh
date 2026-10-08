@@ -6,9 +6,12 @@
 set -uo pipefail
 export XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
-BIN="$HOME/xreal-linux/presenter/target/release/xreal-presenter"
-LOG=/tmp/presenter.log
-SBS_LOG=/tmp/set_sbs.log
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="${XREAL_PRESENTER:-$HERE/presenter/target/release/xreal-presenter}"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/xreal-linux"
+mkdir -p "$STATE"
+LOG="$STATE/presenter.log"
+SBS_LOG="$STATE/set_sbs.log"
 
 stop() {
   for p in vrmonitor vrdashboard vrserver vrcompositor vrwebhelper; do pkill -TERM -x "$p" 2>/dev/null; done

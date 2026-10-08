@@ -17,6 +17,7 @@ const TEMPERATURE_EVENT: u16 = 10122;
 const TX_TOP_BIT: u32 = 0x8000_0000;
 const GETTER_BODY: [u8; 2] = [0x18, 0x00];
 const SBS_BODY: [u8; 4] = [0x1a, 0x02, 0x08, 0x01];
+const TWO_D_BODY: [u8; 4] = [0x1a, 0x02, 0x08, 0x00];
 const HOSTS: [&str; 2] = ["169.254.2.1:52999", "169.254.1.1:52999"];
 /// Bounds the setter for glasses that keep reverting to the regular mode.
 const MAX_SBS_SETS: u32 = 3;
@@ -69,6 +70,15 @@ pub fn watch_display_modes(monitor: String) {
             last = now;
         }
         std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// The only requests this client sends: the read-only getters 10015 and 10273, and the display input mode setter 10274 with value 0 (restore 2D) or 1 (full SBS).
+fn is_allowed(id: u16, body: &[u8]) -> bool {
+    match id {
+        GET_CONFIG | GET_INPUT_MODE => body == GETTER_BODY,
+        SET_INPUT_MODE => body == SBS_BODY || body == TWO_D_BODY,
+        _ => false,
     }
 }
 
@@ -311,6 +321,10 @@ impl Conn {
 
     /// Send one request and return the reply body (after the transaction id), logging any events that arrive first.
     fn request(&mut self, id: u16, txid: u32, body: &[u8], timeout: Duration) -> Option<Vec<u8>> {
+        if !is_allowed(id, body) {
+            eprintln!("[control +{:.1}s] refusing request {id}: not on the allowlist", uptime_s());
+            return None;
+        }
         self.stream.write_all(&build_request(id, txid, body)).ok()?;
         let deadline = Instant::now() + timeout;
         loop {
@@ -473,6 +487,32 @@ mod tests {
     #[test]
     fn set_input_mode_request_is_the_approved_packet() {
         assert_eq!(build_request(SET_INPUT_MODE, 3, &SBS_BODY), [0x28, 0x22, 0, 0, 0, 8, 0x80, 0, 0, 3, 0x1a, 2, 8, 1]);
+    }
+
+    #[test]
+    fn set_input_mode_two_d_request_is_the_sbs_packet_with_value_zero() {
+        assert_eq!(build_request(SET_INPUT_MODE, 4, &TWO_D_BODY), [0x28, 0x22, 0, 0, 0, 8, 0x80, 0, 0, 4, 0x1a, 2, 8, 0]);
+    }
+
+    #[test]
+    fn only_the_listed_ids_and_values_are_allowed() {
+        assert!(is_allowed(GET_CONFIG, &GETTER_BODY) && is_allowed(GET_INPUT_MODE, &GETTER_BODY));
+        assert!(is_allowed(SET_INPUT_MODE, &SBS_BODY) && is_allowed(SET_INPUT_MODE, &TWO_D_BODY));
+        assert!(!is_allowed(SET_INPUT_MODE, &[0x1a, 0x02, 0x08, 0x02]), "other values");
+        assert!(!is_allowed(SET_INPUT_MODE, &GETTER_BODY), "a setter id with a getter body");
+        assert!(!is_allowed(GET_INPUT_MODE, &SBS_BODY), "a getter id with a setter body");
+        for id in [10009u16, 10047, 10053, 10054, 10036, 10031, 10275] {
+            assert!(!is_allowed(id, &GETTER_BODY) && !is_allowed(id, &SBS_BODY), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_refused_request_sends_nothing() {
+        let (mut c, mut server) = pair();
+        assert_eq!(c.request(10047, 9, &GETTER_BODY, Duration::from_millis(100)), None);
+        server.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        let mut b = [0u8; 8];
+        assert!(server.read(&mut b).is_err(), "nothing should have been written");
     }
 
     #[test]
