@@ -401,6 +401,26 @@ pub fn run(shared: SharedCalibration, set_sbs: bool) {
     }
 }
 
+/// One-shot for the launcher: connect, set full SBS if the glasses are in 2D, and return whether a connection was made.
+pub fn set_sbs_once() -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut which = 0;
+    while std::time::Instant::now() < deadline {
+        let addr = HOSTS[which % HOSTS.len()];
+        which += 1;
+        let Ok(stream) = TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(2)) else {
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        };
+        let mut c = Conn { stream, buf: Vec::new(), last_temperature_log: None };
+        println!("[control +{:.1}s] connected to {addr}", uptime_s());
+        c.ensure_sbs(0);
+        return true;
+    }
+    eprintln!("could not reach the glasses' control port");
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

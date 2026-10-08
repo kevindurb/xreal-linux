@@ -6,7 +6,7 @@ grow into the process that imports SteamVR's per-eye textures from the driver an
 late-latching reprojection).
 
     xreal-presenter [--monitor NAME] [--reproject]      # default DP-1; Esc quits
-    options: --no-set-sbs  --no-imu-calibration  --eye-rotation | --eye-rotation-reversed (experimental)  --test-grid  --print-calibration (print and exit)
+    options: --no-set-sbs | --set-sbs-only (set SBS if needed, then exit)  --no-imu-calibration  --eye-rotation | --eye-rotation-reversed (experimental)  --test-grid  --print-calibration (print and exit)
 
 Left half = left eye (red tint), right half = right eye (blue tint). A green square slides across each half with a
 24 px offset between the eyes: in a working stereo mode it should appear to float in front of the frame. White borders

@@ -4,7 +4,7 @@
 //! glasses really show a different image to each eye in their SBS mode. It will grow into the thing that imports
 //! SteamVR's per-eye textures and presents them.
 //!
-//! usage: xreal-presenter [--monitor NAME] [--reproject] [--eye-rotation | --eye-rotation-reversed] [--test-grid] [--no-set-sbs] [--no-imu-calibration] [--print-calibration] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default monitor name: DP-1)
+//! usage: xreal-presenter [--monitor NAME] [--reproject] [--eye-rotation | --eye-rotation-reversed] [--test-grid] [--no-set-sbs | --set-sbs-only] [--no-imu-calibration] [--print-calibration] [--sim-pose [--sim-yaw DEG] [--sim-pitch DEG] [--sim-pitch-amp DEG]] [--dump DIR [--dump-frames N]]      (default monitor name: DP-1)
 //!
 //! Left half of the screen = left eye (red tint), right half = right eye (blue tint). A green square slides across
 //! each half; its position differs by a few pixels between the eyes, so in a working stereo mode it appears to
@@ -1246,7 +1246,7 @@ fn main() {
     let mut sim_pitch_amp = 12.0f64;
     let mut dump_count = 30u32;
     let mut dump_dir: Option<std::path::PathBuf> = None;
-    let (mut use_imu_calibration, mut set_sbs, mut print_calibration) = (true, true, false);
+    let (mut use_imu_calibration, mut set_sbs, mut print_calibration, mut set_sbs_only) = (true, true, false, false);
     if let Some(d) = &dump_dir { let _ = d; }
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -1264,6 +1264,8 @@ fn main() {
             use_imu_calibration = false;
         } else if a == "--no-set-sbs" {
             set_sbs = false;
+        } else if a == "--set-sbs-only" {
+            set_sbs_only = true;
         } else if a == "--print-calibration" {
             print_calibration = true;
         } else if a == "--sim-pose" {
@@ -1281,6 +1283,9 @@ fn main() {
         }
     }
     glasses::uptime_s();
+    if set_sbs_only {
+        std::process::exit(if glasses::set_sbs_once() { 0 } else { 1 });
+    }
     let calibration: glasses::SharedCalibration = Arc::new(Mutex::new(None));
     { let cal = calibration.clone(); std::thread::spawn(move || glasses::run(cal, set_sbs && !print_calibration)); }
     if print_calibration {

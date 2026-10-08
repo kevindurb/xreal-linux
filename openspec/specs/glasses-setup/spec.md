@@ -12,7 +12,7 @@ The glasses SHALL be in full side-by-side mode, which presents a single 3840x108
 #### Scenario: Regular mode at start
 
 - **WHEN** `tools/vr_session.sh start` is run and the glasses are in the regular mode (their output offers more than the single 3840x1080 mode)
-- **THEN** the presenter sets full SBS once, SteamVR is started only after the output offers the single 3840x1080 mode, and the presenter's window moves to the glasses without a restart
+- **THEN** the one-shot `--set-sbs-only` sets full SBS once, and the presenter and SteamVR are started only after the output offers the single 3840x1080 mode
 
 #### Scenario: SBS is not reached
 
