@@ -48,7 +48,9 @@ void main() {
         vec2 cell = abs(fract(px / 120.0 + 0.5) - 0.5) * 120.0;
         bool frame = px.x < 3.0 || px.x > 1917.0 || px.y < 3.0 || px.y > 1077.0;
         bool cross = abs(px.x - 960.0) < 1.5 || abs(px.y - 540.0) < 1.5;
-        float line = (min(cell.x, cell.y) < 1.0 || frame || cross) ? 1.0 : 0.0;
+        float edge_dist = min(px.y, PICTURE_ROWS - px.y);
+        bool ruler = edge_dist < 120.0 && (px.x < 240.0 || px.x > 1680.0) && abs(fract(edge_dist / 20.0 + 0.5) - 0.5) * 20.0 < 1.0;
+        float line = (min(cell.x, cell.y) < 1.0 || frame || cross || ruler) ? 1.0 : 0.0;
         outColor = vec4(mix(vec3(0.05), vec3(1.0), line), 1.0);
         return;
     }

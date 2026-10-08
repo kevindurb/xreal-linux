@@ -558,3 +558,12 @@ The presenter now reads the config on every control-port connection, sends the d
 **Magnetometer at rest, new reading:** on the glasses lying on a desk after the replug the field read (-61, 5, 52) uT, **81 uT** in magnitude, at 400 records/s, against 49.6 uT with components (-24.5, 10.5, -41.7) in the first captures. The orientation differs, but 81 against 50 uT means the hard-iron offset is not constant between sessions (display state, firmware, or magnetic parts near the desk), so a saved calibration may go stale. The collector counts a still sensor as no directions (its noise cloud has every direction around its own centre), which an earlier version got wrong.
 
 **The 2D drop-outs:** the presenter now logs every change of the connector mode list next to the glasses' events on one clock; `tools/analyze_control_events.py /tmp/presenter.log` lists the events before each drop. No drop has been captured with the new logging yet.
+
+### Wearer check of the test grid and the factory distortion (2026-10-08)
+
+The glasses were put in full SBS by the presenter's `--set-sbs` (one `NRDpSetInputMode` = 1, answered `22 00`), then `--test-grid` ran on DP-1 (3840x1080).
+
+- **Plain grid (no correction):** the lines looked straight to the wearer, with no black bars above or below the picture. The top border was visible; the bottom border was hidden by the lens's own curved edge (4 lines above and 4 below the centre cross were visible; in the right eye a sliver of the bottom border showed at the outer corner). So the bottom is cut by the optics, not by a vertical offset. Why there are **no black bars** is still unexplained: the vertical field of view assumption (a 1080-row picture centred in 1200 rows) is neither confirmed nor contradicted.
+- **`--factory-distortion`:** the corners curved away from the wearer; no better, worse than plain.
+- **`--factory-distortion-reversed`:** all four corners were cut off and only a sliver of border showed at the top middle; also worse than plain.
+- **Conclusion:** applying the factory `display_distortion` grid in either direction made the picture worse. The glasses seem to correct their optics themselves (or the grid means something else), so the flags stay off by default and the grid is not worth pursuing further without the vendor's definition of it.
