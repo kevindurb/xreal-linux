@@ -377,3 +377,40 @@ with this sensor after a calibration (an ellipsoid fit over a slow rotation of t
 request 10018 once requests can be sent). Caveats: the sensor sits near the display and USB electronics, so the offsets may change with
 brightness or load; indoors the field is disturbed; the heading must be fused gently (the SDK uses an outlier gate). Not yet measured: whether the
 offset changes with display state, and the factory calibration values.
+
+
+## Anchor-mode observation run (2026-10-08, capture `anchor-03`, wearer toggling anchor mode from the glasses' menu)
+
+Run per `docs/anchor-capture-plan.md`: all ten TCP ports plus both HID nodes (`hidraw4`, `hidraw5`), read-only, 150.7 s, glasses on the latest
+firmware (wearer's statement), Follow mode with Stabilizer off at the start, pointed at the Deck screen and a desk. Phases: get-ready 0-10 s,
+follow 10-25 s, toggle-on 25-65 s, anchor 65-95 s, toggle-off 95-135 s, follow 135-150 s. Only the small event files are kept in
+`docs/samples/anchor-03/` (the 197 MB camera stream is not in the repo).
+
+**Measured**
+- **The camera streams only while the glasses are in anchor mode.** 1,019 frames (message 10056, 193,856-byte payloads, 0 bytes skipped), arriving
+  from about 30 s to 100 s, i.e. from a few seconds into the toggle-on window to a few seconds into the toggle-off window; none in Follow mode
+  before or after. The rate in this run was **15 frames/s** (75 per 5 s, median step 66.8 ms), not the 60 fps of the earlier sample
+  (`captures/cam_52997_sample.bin`); the frame header structure is identical in both. Why the rate differs is not known (a different anchor
+  or camera state is possible).
+- **The frames are usable pictures**: a wide-angle view with the desk, a monitor and a mug in clear detail (right half, 512 x 189, grey levels
+  stretched; faint vertical striping from the column interleaving). Plenty of texture for visual tracking.
+- **Nothing else changed on the host-visible interfaces.** Ports 52990-52995 sent no bytes at all; both HID nodes produced **zero bytes** for the
+  whole run; the IMU stayed at 1000 Hz (gyro/accel) and 399 Hz (magnetometer) and the timestamp stream at 59.9 Hz through both switches. So
+  switching anchor mode on the glasses is **not announced on HID or on the silent ports**; the only host-visible signals are the camera
+  stream itself and three event messages on 52999 (below).
+- **The camera, IMU and timestamp streams share one device clock**: the IMU timestamps span 1455-1606 s, the camera frames 1487.02-1555.04 s.
+- **Event messages on port 52999** at each switch (decoded in `docs/xreal-link-messages.md`, section 10): `10030` (twice) and `10002` (once) at
+  30.7-31.1 s and again at 99.2-99.7 s. `10002` carries a nanosecond device timestamp (1486.512 s and 1555.072 s) that is **0.51 s before the
+  first camera frame and 0.03 s after the last**, so it is the camera/anchor-session start and stop event. Message `10045` (2-byte
+  protobuf payloads `18 01` / `18 02`, 81 in the run, irregular) continued throughout and is unrelated to the toggles.
+
+**Inferred**
+- The glasses start and stop the camera on their own initiative when their menu enters and leaves anchor mode; no host request preceded
+  it on any interface that was recorded. That does **not** show whether a host request can start it in Follow mode: no host-to-glasses message
+  was observed because none was sent.
+- The camera runs at a lower rate than before here; anchor mode may use the camera at 15 fps on this firmware.
+
+**Open**
+- Whether a host request (SDK `NRGrayscaleCameraStart`, inferred id 10053) can start the camera with the glasses in Follow mode and the Stabilizer off.
+- Which port accepts requests (none of 52990-52995 carried anything), and the request header and any handshake.
+- Whether anchor mode itself (Stabilizer behaviour) conflicts with using the glasses as a headset, which was the original objection.
