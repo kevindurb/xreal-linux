@@ -674,7 +674,9 @@ The values are per unit and the document includes the serial number, so it is **
 | 10003 | `NRPowerSaveIsEnable` | `18 00` | `22 00`: value 0, auto sleep is off (the unit after a replug) |
 | 10005 | `NRPowerSaveGetSleepTime` | `18 00` | `22 00`: value 0 |
 | 10008 | `NRProximityIsEnable` | `18 00` | `22 02 10 01`: field 2 = 1, the proximity (wearing) sensor is on |
-| 10044 | `NRProximityGetWearingState` | `18 00` | `22 00`: value 0 (probably "not worn"; meaning inferred) |
+| 10039, 10041 | `NRProximityGetFarThreshold`, `...NearThreshold` | `18 00` | `22 03 08 8c 27`: field 1 (the result code) = 5004, an error: not available on this firmware |
+| 10036, 10031 | `NRImuStart`, `NRVsyncStart` (**start requests**) | `18 00` | `22 00` (success); the IMU and timestamp streams did not change |
+| 10044 | `NRProximityGetWearingState` | `18 00` | value 0 (`22 00`), 1 (`22 02 10 01`) and 2 (`22 02 10 02`) were all seen with the glasses on the wearer's face; the meaning is unknown |
 | 10274 | `NRDpSetInputMode` (**setter**) | `1a 02 08 01` (value 1 = side by side; 0 = regular) | `22 00` (success); the display then switched to full SBS, see below |
 | 10047 | `NRGrayscaleCameraCreate` | `18 00` | `22 00` (empty body = success) |
 | 10053 | `NRGrayscaleCameraStart` (inferred id) | `18 00` | `22 00`; four camera frames follow on 52997 |

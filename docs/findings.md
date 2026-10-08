@@ -487,7 +487,8 @@ Same glasses, same tool, about 25 minutes after the first session, no replug in 
 
 ### The four-frame burst reproduces; the frame header declares the image size (2026-10-08, after the replug)
 
-- **Same sequence, fresh replug, glasses worn** (the wearing-state getter read 1, so 1 = worn and the earlier 0 was "not worn"), full SBS set by the host:
+- **Same sequence, fresh replug, glasses worn** (the wearing-state getter read 1; later readings showed that its values do not map to worn and not worn the way this
+  line first assumed, see the end of this section), full SBS set by the host:
   Create answered, Start sent 10 s later answered, the first frame 0.5 s after Start, **exactly 4 frames again** (66.8 ms apart), then silence; Stop got no reply again.
   So the burst is repeatable and is not the glasses falling asleep.
 - **The control server stayed alive this time:** after the unanswered Stop, the read-only getters were still answered (input mode 1, wearing state 1). The earlier
@@ -502,4 +503,18 @@ Same glasses, same tool, about 25 minutes after the first session, no replug in 
   the clean picture uses half of them.
 - **Not found in the vendor service:** an acknowledgement or per-frame reply for camera frames. The frame id (10056) appears only in message-class registration code.
   The `InitSet*` values the service passes still have to be recovered by tracing `ImpGrayCamera`'s virtual calls (its virtual table is at `0x2377d50` in `libnr_service.so`).
+
+### Starting the IMU and vsync before the camera changes nothing; the wearing state is not what it seemed (2026-10-08)
+
+Fresh replug, then on one connection: `NRDpSetInputMode` = 1 (full SBS), `NRImuStart` (10036) and `NRVsyncStart` (10031), both with the body `18 00`, then `NRGrayscaleCameraCreate`,
+nine seconds, `NRGrayscaleCameraStart`.
+
+- **`NRImuStart` and `NRVsyncStart` were answered `22 00` (success) and changed nothing visible:** the IMU stream stayed at 1,400 records/s and the timestamp stream at 60/s.
+- **The camera still gave exactly 4 frames** (first frame 0.5 s after Start, 66.8 ms apart), then silence, and Stop got no reply. So an IMU or vsync start on the connection is not what keeps the camera streaming.
+- **Sending Start a second time without a replug is known to fail:** the earlier session 2 got no reply to it, no frames, and the control server then stayed silent until a replug.
+- **The wearing state does not behave like a worn flag.** `NRProximityGetWearingState` read 1 (during the camera run before this), then 0 on 16 samples over 20 s with the glasses on the wearer's face,
+  then 2 (twice, in 2D and in SBS). The notification id 10045 (`18 01` / `18 02`) toggles between 1 and 2 around display changes, and 10086 does too. The proximity threshold getters
+  (`NRProximityGetFarThreshold`, `GetNearThreshold`) answer with an **error code, 5004**, not a value, and `NRProximityIsEnable` reads 1. The meaning of the values 0, 1 and 2 is unknown, so the earlier
+  "1 = worn" is withdrawn. Nothing yet explains why the glasses drop back to 2D mode on their own.
+- **Next:** the `InitSet*` requests (values not known; trace them offline) and the SDK's own empty-body form `1a 00` are the remaining untried differences from the vendor sequence. Each hardware attempt costs a replug.
 

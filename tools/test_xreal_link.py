@@ -197,7 +197,7 @@ class ControlSession(unittest.TestCase):
         self.assertEqual(struct.unpack(">I", pkt[6:10])[0], 0x80001234)
 
     def test_getters_are_always_allowed(self):
-        for mid in (10013, 10015, 10085, 10273, 10003, 10005, 10008, 10044):
+        for mid in (10013, 10015, 10085, 10273, 10003, 10005, 10008, 10044, 10039, 10041):
             self.assertTrue(self.xs.check_allowed(mid, False))
 
     def test_camera_requests_need_the_flag(self):
@@ -220,6 +220,21 @@ class ControlSession(unittest.TestCase):
         for mid in (10047, 10053, 10054, 10284, 10281, 10012):
             with self.assertRaises(ValueError):
                 self.xs.check_allowed(mid, False, True, bytes.fromhex("1a020801"))
+
+    def test_sensor_start_needs_its_flag_and_the_empty_body(self):
+        body = bytes.fromhex("1800")
+        for mid in (10036, 10031):
+            with self.assertRaises(ValueError):
+                self.xs.check_allowed(mid, True, True, body)           # other flags do not unlock it
+            self.assertTrue(self.xs.check_allowed(mid, False, False, body, True))
+            for bad in (b"", bytes.fromhex("1a00"), bytes.fromhex("1a020801")):
+                with self.assertRaises(ValueError):
+                    self.xs.check_allowed(mid, True, True, bad, True)
+
+    def test_sensor_stop_and_ext_requests_stay_refused(self):
+        for mid in (10037, 10032, 10295, 10296, 10297):
+            with self.assertRaises(ValueError):
+                self.xs.check_allowed(mid, True, True, bytes.fromhex("1800"), True)
 
     def test_side_by_side_frame(self):
         self.assertEqual(self.xs.build_request(10274, bytes.fromhex("1a020801"), 1).hex(" "), "28 22 00 00 00 08 80 00 00 01 1a 02 08 01")
