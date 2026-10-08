@@ -461,3 +461,23 @@ control port (52999) and reading 52997 and 52996. Every state-changing request w
   Start (their values are not documented); a heartbeat or an IMU/vsync session (`NRImuStart` 10036, `NRVsyncStart` 10031) started on the same
   connection; or the firmware stopping a camera it did not start itself outside anchor mode. A repeated Start was also not tried.
 
+### What happened when the camera sequence was repeated (2026-10-08)
+
+Same glasses, same tool, about 25 minutes after the first session, no replug in between:
+
+| Session | What was sent | Result |
+|---|---|---|
+| 2 | Create, then Start 2.5 s later | Create answered (`22 00`); **Start got no reply and no frames came** |
+| 3 | Create | **no reply** |
+| 4 | the read-only getter `NRDpGetInputMode` | **no reply** (it was answered in step A before the camera was started) |
+
+- The IMU stream (1,400 records/s), the timestamp stream (60/s), the USB device and the display mode stayed normal throughout, so only the
+  **control server** stopped answering. The connection is still accepted. It stopped after the second Start.
+- Reading: the glasses seem to handle control requests one at a time, and the camera start never completed, so everything queued behind it. The
+  first session's four-frame burst and its unanswered Stop may already have been the camera pipeline stalling; the repeat made it worse. This is
+  an inference.
+- **Do not send a Start again to glasses that have already run the camera since power-up.** A replug is needed to recover (the glasses then fall back to their
+  normal 2D mode; set full SBS again in their menu).
+- Still unknown: whether a camera that is configured first (the `InitSet*` requests) streams continuously. Their values are not known
+  (`docs/xreal-link-messages.md` section 13.5).
+
