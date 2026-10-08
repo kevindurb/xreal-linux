@@ -94,20 +94,19 @@ Allowlisted today: getters 10003, 10005, 10008, 10013, 10015, 10016, 10025, 1002
 
 ## 7. Next steps, in order
 
-**6DoF and the camera are parked (decided by the user 2026-10-08).** A host-started camera gives one 4-frame burst per replug in every variant tried, and the `InitSet*` values are not in ControlGlasses 3.1.0 or Nebula 3.8.1 (task 0.5 in `openspec/changes/add-6dof-camera-tracking`). Resume only if the values or a capture of an official app starting the camera turn up. The work is now the 3DoF tier and the glasses' own configuration. Everything below was built 2026-10-08 and is **uncommitted until the user decides**; unit tests pass (presenter 37, python 28), the config read and the test grid ran on the Deck, and nothing has run in a VR session.
+**6DoF and the camera are parked (decided by the user 2026-10-08).** A host-started camera gives one 4-frame burst per replug in every variant tried, and the `InitSet*` values are not in ControlGlasses 3.1.0 or Nebula 3.8.1 (task 0.5 in `openspec/changes/add-6dof-camera-tracking`). Resume only if the values or a capture of an official app starting the camera turn up. The work is the 3DoF tier and the glasses' own configuration.
 
-What exists:
-- The presenter reads `GetConfig` on every control-port connection (`presenter/src/glasses.rs`), caches it under `~/.cache/xreal-presenter/` (hashed file names, never the serial), sends the display-derived field of view and IPD to the driver (message type 7; the driver waits about 2 s for it in `Activate`), applies the factory gyro/accel matrices (`--no-imu-calibration` turns it off; the factory gyro bias is NOT used, see `docs/findings.md`) and logs the glasses' events as `[control +T s] event ID ...` and connector mode changes as `[display +T s] modes: ...` on the same clock. `--print-calibration` prints a summary and exits.
-- Opt-in, untested on hardware: `--set-sbs` (sends `28 22 00 00 00 08 80 00 00 03 1a 02 08 01` only if the input mode reads 0), `--factory-distortion` / `--factory-distortion-reversed` and `--test-grid` (the factory display-distortion grid in the warp shader), `--mag-calibrate`, `--mag-report` and `--mag-yaw` (saved hard-iron offset and per-axis scale).
-- `tools/analyze_control_events.py` lists the glasses' events before each drop to 2D.
+What exists (committed and pushed; presenter tests 37, python 28):
+- The presenter reads `GetConfig` on every control-port connection (`presenter/src/glasses.rs`), caches it under `~/.cache/xreal-presenter/` (hashed file names, never the serial), sends the display-derived field of view and IPD to the driver (message type 7; the driver waits about 2 s for it in `Activate`), applies the factory gyro/accel matrices (`--no-imu-calibration` turns it off; the factory gyro bias is NOT used, see `docs/findings.md`) and logs the glasses' events as `[control +T s] event ID ...` and connector mode changes as `[display +T s] modes: ...`. A VR session with these builds ran at 60 fps and the wearer said everything looked right (about 4 minutes).
+- **`--set-sbs` works on hardware** (2026-10-08): with the glasses in 2D it sent `28 22 00 00 00 08 80 00 00 03 1a 02 08 01`, the glasses replied `22 00` and the mode became a single 3840x1080. Still opt-in; `tools/vr_session.sh start` still refuses unless the glasses are already in SBS.
+- **Negative results, flags kept off:** `--factory-distortion` and `--factory-distortion-reversed` both made the test grid worse than the plain one (which looked straight), so the display-distortion grid is not used. `--mag-calibrate` did not converge (the fitted centre kept moving, residual 11-18 %), and the glasses hold no stored mag calibration (10018 answered empty), so `--mag-yaw` stays experimental. Details in `docs/findings.md`.
+- `tools/analyze_control_events.py` lists the glasses' events before each drop to 2D. No drop has been caught yet (one 4-minute session, none).
 
-**What only the wearer can do, in priority order** (glasses in full SBS: set it with the user's approval, or `--set-sbs` after approval of those exact bytes):
-1. **Vertical field of view / distortion direction, no SteamVR needed:** on the Deck run the presenter with `--monitor DP-1 --test-grid` (with `XREAL_EXTRA_ARGS` or by hand), look at the frame: black bars above and below mean the 1080-row picture sits unscaled in the 1200-row panel (the assumption behind the vertical half tangent 0.2190); no bars means it is scaled and the vertical field of view must be corrected. Then repeat with `--test-grid --factory-distortion` and `--test-grid --factory-distortion-reversed` and say which makes the lines straight toward the edges (the other two look more curved). Tell Claude the answer and it flips the default.
-2. **The 2D drop-outs:** `tools/vr_session.sh start`, wear for 20-30 minutes in SteamVR Home, then on the Deck `python3 ~/xreal-linux/tools/analyze_control_events.py /tmp/presenter.log` and send the output. `NRProximitySetEnable` (10009) only with approval.
-3. **`--set-sbs`:** approve the bytes above first; start the presenter with `--set-sbs` while the glasses are in 2D and check the display switches and the presenter logs the reply.
-4. **Magnetometer:** `xreal-presenter --mag-calibrate` (turn the glasses slowly through every direction until it saves), then `--mag-report` with the glasses on a table for about 70 s, and compare the two drift figures it prints; then a normal session with `--mag-yaw`. The field at rest was 81 uT in one session against 50 uT earlier, so the calibration may need redoing.
-
-Next for Claude once those answers are in: flip the distortion default if it helps, decide whether `--set-sbs` and the calibration flags become defaults, then tidy and commit (the user runs `/code-review` first). The other proposed changes, `add-installable-package` (needs a discussion of what the package is and contains) and `support-other-gpus`, have not been started.
+Open:
+1. **The 2D drop-outs:** needs a long session. `tools/vr_session.sh start`, leave it running (worn or on the desk), then on the Deck `python3 ~/xreal-linux/tools/analyze_control_events.py /tmp/presenter.log`. `NRProximitySetEnable` (10009) only with approval.
+2. **Vertical field of view:** the 0.2190 half tangent still assumes a 1080-row picture centred in 1200 rows; the wearer sees no black bars, and the bottom border is hidden by the lens edge. Not settled, no known fix.
+3. The event reader reconnects after 30 s of silence (harmless but noisy); it should just keep waiting.
+4. The other proposed changes, `add-installable-package` (needs a discussion of what the package is and contains) and `support-other-gpus`, have not been started.
 
 ## 8. Status of the OpenSpec changes
 
@@ -120,6 +119,6 @@ Next for Claude once those answers are in: flip the distortion default if it hel
 
 ## 9. State of the machines at the end of this session
 
-- Glasses: back in their normal 2D mode after the last replug (no setter was sent since), Follow mode, Stabilizer off; the camera Start was used since that replug (replug before any further camera attempt, if it is ever resumed).
-- Deck: no VR session and no `xreal-session` unit running. The presenter and driver with the config reader, type 7 message, distortion, test grid and magnetometer modes are built and installed (`~/xreal-linux/presenter/target/release/xreal-presenter`, the driver under `driver/xreal/bin`); only the standalone presenter runs described in section 7 were done with them. Waydroid stopped and reverted; `adb` removed.
-- Repo: the 2026-10-08 camera write-up is committed and pushed; the config, calibration, distortion, magnetometer and analyser work is in the working tree, uncommitted.
+- Glasses: full SBS (set by the host with `--set-sbs`), Follow mode, Stabilizer off; the camera Start was used since the last replug.
+- Deck: no VR session and no presenter, `xreal-session` or `xreal-magcal` unit running. The latest presenter and driver are installed. Waydroid stopped and reverted; `adb` removed.
+- Repo: everything committed and pushed to `main`.
