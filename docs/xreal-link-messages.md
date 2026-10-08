@@ -655,7 +655,7 @@ The values are per unit and the document includes the serial number, so it is **
   eye yet), each eye sees about 42.2 degrees horizontally by 24.7 degrees vertically: half-tangents of 0.3857 and 0.2190 after averaging both
   eyes. The driver's old placeholder was 48.5 x 28.4 degrees. The driver's `GetProjectionRaw` and the presenter's reprojection constant now use
   the new values.
-- **IPD.** The display offsets give 64.0 mm; the driver still uses 63 mm.
+- **IPD.** The display offsets give 64.0 mm, and the driver now reports 64 mm (it was 63 mm).
 - **6DoF.** The camera's intrinsics and its pose relative to the IMU are given by the glasses. The camera-to-IMU *time offset* is not in the
   file. The config does not say how the camera starts.
 - **Eye frame size (inference, not checked).** The camera stream's payload is 193,856 bytes; 512 x 378 = 193,536 plus 320 header bytes would fit,

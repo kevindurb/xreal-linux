@@ -151,7 +151,7 @@ struct Settings {
     int renderWidth = 1920, renderHeight = 1080;  // per eye, the panel's size; the Deck held 60 fps with Home on at this size once paced (docs/findings.md)
     int windowWidth = 3840, windowHeight = 1080;  // both eyes side by side on the glasses
     float refreshHz = 60.f;
-    float ipd = 0.063f;
+    float ipd = 0.064f;
     float headHeight = 1.5f;  // metres above the floor in SteamVR's standing space
     bool sendAngularVelocity = true;  // lets SteamVR predict ahead; settable for diagnosing glitches
     bool headModel = true;            // lets SteamVR add head/neck translation from rotation
