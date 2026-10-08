@@ -197,7 +197,7 @@ class ControlSession(unittest.TestCase):
         self.assertEqual(struct.unpack(">I", pkt[6:10])[0], 0x80001234)
 
     def test_getters_are_always_allowed(self):
-        for mid in (10013, 10015, 10085, 10273):
+        for mid in (10013, 10015, 10085, 10273, 10003, 10005, 10008, 10044):
             self.assertTrue(self.xs.check_allowed(mid, False))
 
     def test_camera_requests_need_the_flag(self):

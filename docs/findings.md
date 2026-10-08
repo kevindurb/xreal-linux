@@ -476,8 +476,12 @@ Same glasses, same tool, about 25 minutes after the first session, no replug in 
 - Reading: the glasses seem to handle control requests one at a time, and the camera start never completed, so everything queued behind it. The
   first session's four-frame burst and its unanswered Stop may already have been the camera pipeline stalling; the repeat made it worse. This is
   an inference.
-- **Do not send a Start again to glasses that have already run the camera since power-up.** A replug is needed to recover (the glasses then fall back to their
+- **Do not send a Start again to glasses that have already run the camera since power-up** (precaution). A replug is needed to recover (the glasses then fall back to their
   normal 2D mode; set full SBS again in their menu).
+- **Possible alternative explanation:** the wearer thinks the glasses had fallen asleep, which they do on their own. After the replug the control server answered
+  again, and a query showed auto sleep **off** but the **proximity (wearing) sensor on** (`NRProximityIsEnable` = 1, wearing state 0, probably not worn). So the glasses may
+  go idle by wearing state, not by the power-save timer, and an idle control server could look the same as a stalled camera. This is untested; the next camera run keeps
+  the glasses worn.
 - Still unknown: whether a camera that is configured first (the `InitSet*` requests) streams continuously. Their values are not known
   (`docs/xreal-link-messages.md` section 13.5).
 
