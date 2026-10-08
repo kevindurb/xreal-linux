@@ -1,7 +1,7 @@
 # XrealLink message ids and the One's TCP stream framing
 
 Derived from XREAL ControlGlasses 3.1.0 (`libnr_service.so`) and checked against a real capture. Companion to
-`docs/nebula-findings.md`. Nothing here has been sent to the glasses.
+`docs/nebula-findings.md`. Sections 1-10 are offline analysis; sections 11-13 record what was sent to the glasses (read-only requests only).
 
 ## 1. Framing (verified on the camera stream, inferred for the others)
 
@@ -537,6 +537,8 @@ Rates measured in the same run: camera 15.0 Hz while on, timestamp stream 59.9 H
 
 ## 11. First host-to-glasses request: result (2026-10-08, `tools/xreal_probe.py`)
 
+> **Superseded by section 13.** The packet below failed because the control port is 52999 (not 52990-52995) and a request must carry a transaction id.
+
 The first message this project has ever sent to the glasses: one packet, `NRGlassesGetSWVersion` (id 10013, empty body),
 `27 1d 00 00 00 02 1a 00` (8 bytes), to each of the six silent ports 52990-52995 in turn, one connection each, with the glasses on the
 latest firmware in Follow mode, nothing else connected. The probe listens 1.5 s first, sends once, waits 3 s, closes; it cannot send
@@ -559,6 +561,8 @@ anything but the allowlisted read-only getters.
 
 ## 12. Why a "full header" retry was not attempted: the SDK's packet header and sockets are local IPC (2026-10-08)
 
+> **Superseded by section 13.** No longer-header retry is needed; the framing is `msg_id`, length, transaction id, body.
+
 Reading the SDK's own sender (ControlGlasses 3.1.0, `libnr_service.so`) to find the header a request needs:
 
 - **XrealLink has two clients, both aimed at `127.0.0.1`**: the TCP client on port **8099** (section 11.2 of `docs/nebula-findings.md`) and a **UDP**
@@ -579,3 +583,82 @@ that the silent TCP ports are request ports at all (they may be push streams for
 start for anchor mode is initiated by the glasses' own firmware (section 10, and `docs/findings.md`), and nothing here shows a host request
 for it. A further host request would be a guess, so none was sent. The evidence that would settle the question is a capture of a working host
 (a phone running the vendor app) while it starts and stops the camera.
+
+
+## 13. The control port: framing, first working request and the factory calibration (2026-10-08)
+
+**Source.** The framing below comes from the public Android library [Skarian/one-xr](https://github.com/Skarian/one-xr) (MIT licence;
+`XrControlSession.kt` and `XrControlProtocol.kt`), written for the XREAL One and One Pro. It was found by a web search and read from its source.
+It applies unchanged to the XREAL 1S used here (USB `3318:043e`, `bcdDevice` 4.09). This project's own code follows the documented wire format
+and does not copy that library's code.
+
+**The control channel is TCP port 52999** (the stream port is 52998, as in section 1). Frames on it:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 2 | `msg_id`, big endian (one-xr calls it the magic) |
+| 2 | 4 | length of everything after this field, big endian |
+| 6 | 4 | **transaction id**, big endian; requests set the top bit (`id | 0x80000000`), responses echo it with the top bit clear |
+| 10 | length - 4 | body |
+
+- A response has the same `msg_id` as its request and the same transaction id. Frames the glasses send on their own (the temperature and
+  other notifications of section 10, and the key events below) have **no transaction id**: their payload starts right after the 6-byte header.
+- A read-only getter's request body is `18 00` (protobuf field 3, varint 0). A numeric setter's body is `1a <len> 08 <value>`.
+- A response body is `22 <len> <nested>` (field 4). The nested message holds the value: field 2 (`12 <len> <bytes>`) for a string, field 2
+  as a varint (`10 <varint>`) for a number, or just `08 <status>` for a setter, where a non-zero status (for example 10001) means the command was rejected.
+
+Commands documented by one-xr (names are one-xr's):
+
+| `msg_id` | Name | Kind |
+|---|---|---|
+| `0x271D` | get software version | read-only getter |
+| `0x271F` | **get config** (calibration JSON, below) | read-only getter |
+| `0x2729` | get id | read-only getter |
+| `0x272D` | get DSP version | read-only getter |
+| `0x271C` / `0x2727` | set brightness / set dimmer | setter, **not sent** |
+| `0x2829` | set scene mode (0 = buttons enabled, 1 = disabled) | setter, **not sent** |
+| `0x2822` | set display input mode (0 = regular, 1 = side by side) | setter, **not sent** |
+| `0x272E` | key state change event, 64 raw bytes (little-endian key type, state, device time) | event from the glasses |
+
+**Why sections 11 and 12 failed:** the packet went to ports 52990-52995 instead of 52999 and had no transaction id. The glasses closed those
+connections within 10 ms, which is what a malformed frame gets.
+
+### 13.1 The first working request
+
+`tools/xreal_probe.py --txid --port 52999 --id 0x271f` sends exactly one packet and never retries. Its `--txid` mode only accepts port 52999 and
+the four read-only getters above. The packet:
+
+    27 1f 00 00 00 06 80 00 00 01 18 00
+
+Result: the glasses replied within the 8-second wait (`msg_id` 0x271F, transaction id 1) with a **220,434-byte payload**: a protobuf string field
+holding **220,422 characters of valid JSON**. Afterwards the glasses were unaffected: IMU stream at 1,400 records/s with clean framing, the same
+USB device number, and the display mode unchanged.
+
+### 13.2 What the config contains
+
+The JSON is the glasses' factory calibration. Top-level keys: `FSN` (the unit's serial number), `IMU`, `RGB_camera`, `SLAM_camera`, `display`,
+`display_distortion`, `glasses_version` (7 on this unit) and `last_modified_time`.
+
+| Key | Contents (values from this unit) |
+|---|---|
+| `SLAM_camera.device_1` | radial camera model; resolution 504 x 378; focal length about 238.8 px; principal point about (253.3, 190.4); five distortion coefficients; rolling-shutter time 1.79 ms; **`imu_p_cam`** about (-25.0, 14.3, 3.8) mm and **`imu_q_cam`**, the camera pose relative to the IMU (quaternions are JPL order, x y z w) |
+| `RGB_camera.device_1` | radial model; 2016 x 1512; focal length about 955 px; principal point about (1013, 762) |
+| `display` | panel resolution 1920 x 1200; per-eye `k_left_display` / `k_right_display` (3x3 intrinsics, focal length about 2490 x 2470 px, principal point about (962, 605)); per-eye pose relative to the IMU (`target_p_*_display`, `target_q_*_display`, with `target_type` "IMU"); the x offsets differ by about 64.0 mm |
+| `display_distortion` | per eye a 61 x 39 grid (`data` has 9,516 integers each, four per grid point), `type` 1 |
+| `IMU.device_1` | accelerometer and gyro biases, 3x3 calibration matrices, noise figures, a 23-entry temperature-dependent gyro bias table, and `gyro_q_mag` = (-0.5, -0.5, 0.5, 0.5), the magnetometer's orientation relative to the gyro, with the magnetometer's bias and scale still at their defaults |
+
+The values are per unit and the document includes the serial number, so it is **not stored in the repo**. A copy was kept outside it.
+
+### 13.3 What this was used for, and what is still open
+
+- **Field of view.** From the display intrinsics, assuming the 1080-row full SBS picture sits unscaled in the 1200-row panel (not checked by
+  eye yet), each eye sees about 42.2 degrees horizontally by 24.7 degrees vertically: half-tangents of 0.3857 and 0.2190 after averaging both
+  eyes. The driver's old placeholder was 48.5 x 28.4 degrees. The driver's `GetProjectionRaw` and the presenter's reprojection constant now use
+  the new values.
+- **IPD.** The display offsets give 64.0 mm; the driver still uses 63 mm.
+- **6DoF.** The camera's intrinsics and its pose relative to the IMU are given by the glasses. The camera-to-IMU *time offset* is not in the
+  file. The config does not say how the camera starts.
+- **Eye frame size (inference, not checked).** The camera stream's payload is 193,856 bytes; 512 x 378 = 193,536 plus 320 header bytes would fit,
+  against the config's 504 x 378.
+- **No camera command** is among the commands one-xr documents, so the question from section 11 (can a host request start the camera outside
+  anchor mode) is still open.
