@@ -17,6 +17,13 @@
 - Whether the HID interfaces take control commands (brightness, display mode, etc.). Nothing was written to them.
 - The Eye stream: true image geometry, why the left half is interleaved, and the pixel packing.
 - Whether 6DoF can be done from a single camera view plus the IMU, and what calibration that needs.
+- How the Eye is started. It streams only in the glasses' own anchor mode. The vendor SDK has camera start/stop requests
+  (`docs/xreal-link-messages.md`), but the port that takes requests, any handshake, and whether Follow mode with the Stabilizer off
+  allows the camera are unknown. Plan: `docs/anchor-capture-plan.md` (observation only).
+- Whether the magnetometer in the IMU stream (record type 4, 400 Hz, `docs/findings.md`) can bound yaw drift: it needs calibration
+  (the factory values may be readable via request 10018) and a check of how its offset changes with display state and load.
+- The meaning of the SDK enum values (pixel format, resolution, exposure type, space/scene mode) and the request header
+  fields beyond `msg_id` and length.
 
 ## Suggested order
 

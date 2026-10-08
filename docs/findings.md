@@ -84,7 +84,8 @@ Fixed 134-byte records, about 1400 per second in total. Layout (little endian), 
 
 - Type `0x0b`: about 1000 Hz. At rest the first three floats are near zero (std about 0.005) and the last three have
   a magnitude of about 9.77, which is gravity in m/s^2. So gyro is in rad/s and accel in m/s^2.
-- Type `0x04`: about 400 Hz and every float is NaN. Probably a sensor that is absent, e.g. a magnetometer. Upstream
+- Type `0x04`: exactly 400 Hz (median step 2.500 ms). The six floats at offset 34 are NaN, which is why this was first read as an
+  absent sensor, **but the record carries a magnetometer reading further in** (see "Magnetometer in the IMU stream" below). Upstream
   drivers ignore these records.
 
 ### IMU axes and signs (measured)
@@ -344,3 +345,35 @@ about 70% with Home on (90th percentile and peak 100%) and 20-29% with Home off.
 52998 delivered 1873856 bytes (about 1398 x 134-byte slots/s, which includes non-IMU record types, not yet split by type),
 52996 delivered 600 records (60/s, consistent with "follows the display refresh"), and **52997 delivered nothing**: the camera
 was idle, as noted above. A camera capture therefore needs the glasses in a mode that starts the Eye (anchor mode so far).
+
+
+## Magnetometer in the IMU stream (measured offline on existing captures; corrects the earlier "no magnetometer" note)
+
+IMU message `10294` interleaves two record types (u32 at packet offset 30): type `0x0b` at exactly 1000 Hz (gyro and accel, as above)
+and type `0x04` at exactly 400 Hz. Every timestamp series is strictly increasing once split by type; the merged series is not,
+because the two types are clocked 0.27 ms apart. The type `0x04` record is:
+
+| Offset | Content |
+|---|---|
+| 34-57 | six f32 = NaN (unused fields) |
+| 58 | 3 x f32: magnetic field vector, probably microtesla, in the sensor frame |
+| 70 | f32 = 25.0 in every record seen (likely a temperature, a fixed default) |
+| 74-133 | zeros, one repeated pattern of small constants, and a few bytes that look like padding |
+
+Evidence that this is a real magnetometer (all four IMU captures in `captures/`, 20-38 s each):
+- **At rest** (`xreal_52998_still.bin`) the vector length is **49.6 uT**, standard deviation 0.5 uT, which is a normal Earth-field
+  magnitude; the components are about (-24.5, 10.5, -41.7).
+- **Moving**, the length wanders (30.8 to 57.3 uT in `imu_move.bin`), as expected for an uncalibrated sensor near ferrous parts.
+- **It tracks yaw.** In `imu_yaw.bin`, the tilt-compensated magnetic heading (horizontal components about the gravity direction taken from
+  the accelerometer) against the gyro yaw integrated about the same axis has a **correlation of -0.98** (the sign is only an
+  axis-handedness convention). The regression slope is -0.36, i.e. the raw heading moves about 0.36 degrees per degree of real yaw:
+  the sensor is **not calibrated** (hard-iron offset and soft-iron scaling from the glasses' own electronics).
+- The SDK has the matching pieces: `MSG_W_MAG_CALIBR_DATA`/`R_MAG_CALIBR_DATA` (0x1B/0x1C), `NRGlassesGetMagCalibrationData` (10018) and
+  `...SetMagCalibrationData` (10019), `nativeSet/GetMagneticState`, and strings `Factory mag bias`, `online_calib_mag_bias`,
+  `EkfMagneticOutlierCountThreshold` in its IMU tracker, i.e. XREAL's own tracker fuses this magnetometer for yaw.
+
+Consequences for the project (not acted on yet): yaw drift, the main weakness of the IMU-only tracking in the presenter, could be bounded
+with this sensor after a calibration (an ellipsoid fit over a slow rotation of the glasses in all directions, or the factory values via
+request 10018 once requests can be sent). Caveats: the sensor sits near the display and USB electronics, so the offsets may change with
+brightness or load; indoors the field is disturbed; the heading must be fused gently (the SDK uses an outlier gate). Not yet measured: whether the
+offset changes with display state, and the factory calibration values.

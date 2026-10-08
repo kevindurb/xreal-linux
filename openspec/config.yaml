@@ -21,7 +21,7 @@ context: |
   - The glasses expose USB networking: link-local 169.254.1.1 / 169.254.2.1, TCP ports 52990-52999. 52998 = IMU stream, 134-byte
     records (match only the first 6 header bytes; bytes 6-7 vary), 52997 = Eye camera frames, 52996 = display-refresh timestamps,
     52999 = status/control events (read-only so far). Nothing has ever been sent to the glasses; there is no known host-to-glasses command.
-  - IMU frame: sensor Y points down; converting a vector from the sensor frame to OpenVR body frame is (x, -y, -z). No magnetometer, so yaw drifts.
+  - IMU frame: sensor Y points down; converting a vector from the sensor frame to OpenVR body frame is (x, -y, -z). The IMU stream carries an uncalibrated magnetometer (record type 4, 400 Hz, unused), so yaw currently drifts.
   - SteamVR on Linux refuses to draw into a desktop window and needs a DRM lease of a "non-desktop" connector. The glasses' connector is
     not non-desktop, so direct mode in our own driver (no lease needed) is the chosen route.
   - SteamVR's vrserver runs inside Steam's pressure-vessel container: it cannot see files under /run/user, so driver<->presenter use an
