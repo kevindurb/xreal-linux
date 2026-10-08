@@ -510,3 +510,13 @@ Notable ones for the 6DoF question (all layouts above, none sent):
 - `NRGlassesGetStartupState` (10265): request `{}`, response `{ 1: result, 2: varint state }`.
 - `NRGlassesSetSpaceMode` (10284) and `SetSceneMode` (10281): `{ 1: varint }` (the mode value meanings are unknown).
 - `NRUsbSetNetworkEnable` (10292): `{ 1: varint }`.
+
+## 9. The on-glasses application was not analysed (decision)
+
+The ControlGlasses 3.1.0 package also bundles the One's firmware images, including the glasses' application
+`pilot_1.6.1.20250730115123.bin` (27.8 MB), which is the server side of this protocol. Its file has a short plain header (a magic, then the
+version string) followed by a body with a flat byte distribution (not a simple XOR; no recognisable archive or ELF magic under a
+single-byte key), i.e. it is protected. **Recovering the protocol from it would mean defeating the vendor's firmware protection, which
+this project does not do**; the copy used for this check was deleted. The protocol facts in this document come from the host-side
+SDK libraries and from the project's own captures only. Remaining unknowns (which port takes requests, any handshake, the enum values)
+should be settled by observing a working host or by an approved, minimal, read-only probe of the glasses.
