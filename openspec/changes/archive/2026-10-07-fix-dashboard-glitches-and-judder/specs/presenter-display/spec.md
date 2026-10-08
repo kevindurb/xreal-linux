@@ -25,16 +25,11 @@ The presenter's periodic report SHALL include, for the new SteamVR frames shown 
 - **WHEN** the presenter runs with `--sim-pose --sim-yaw 40` and SteamVR renders every refresh for evenly spaced poses
 - **THEN** each report shows a non-zero median step and near-repeat and double-step counts close to zero, apart from the pan's turnarounds
 
-### Requirement: Hide SteamVR's bad frames when no upstream fix works
+### Requirement: Reprojection hides missed SteamVR frames
 
-If neither the compositor sync layer nor `steamvr.enableLinuxVulkanAsync` removes SteamVR's dashboard bad frames, the presenter SHALL provide `--filter-bad-frames`. With it, a new SteamVR frame that differs sharply from the previously shown frame SHALL be held back for one refresh, with the previous frame shown again in its place. A frame that is still different on the next refresh SHALL be shown, so a real change is delayed by at most one refresh. While a frame is held back, the presenter SHALL NOT release the previously shown frame's image to SteamVR.
+With `--reproject` the presenter SHALL show, on every refresh, the newest SteamVR frame warped to the current head pose, so that when SteamVR misses a frame the displayed motion stays even. Measured with `tools/judder_report.py` on a steady simulated turn, the share of refreshes that do not move SHALL be lower, and the share that move twice as far SHALL be lower, than without `--reproject`.
 
-#### Scenario: Isolated bad frame during a pointer sweep
+#### Scenario: Steady simulated turn with the pacing hold on
 
-- **WHEN** `--filter-bad-frames` is on, the glasses are in full SBS, and SteamVR composites one bad frame (scene missing in one eye) between two normal ones
-- **THEN** the glasses show the previous normal frame instead, and a `--dump` capture of the sweep contains no bad frames
-
-#### Scenario: Real scene change
-
-- **WHEN** `--filter-bad-frames` is on and the dashboard opens, changing the image for good
-- **THEN** the new image appears one refresh later than without the filter
+- **WHEN** the presenter runs with `--reproject --sim-pose --sim-yaw 40` and `--dump` captures 480 refreshes
+- **THEN** `tools/judder_report.py` reports fewer double shifts than the same capture without `--reproject`

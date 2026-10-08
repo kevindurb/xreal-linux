@@ -71,3 +71,12 @@ None.
 - `tools/doctor.sh`, `driver/README.md`, `docs/findings.md`, `docs/open-questions.md`.
 - **New external dependency (user-installed, not vendored):** the `VK_LAYER_STEAMVR_compositor_sync` Vulkan layer, MIT licensed. It is new, with zero stars, so review its source and build it ourselves.
 - **SteamVR settings** on the Deck: `steamvr.enableHomeApp`, `steamvr.background`, `steamvr.enableLinuxVulkanAsync`, `driver_xreal.hold_after_present`, `driver_xreal.hold_max_ms`.
+
+## Outcome (2026-10-07)
+
+The plan above was not what worked. Measured on the Deck (details in `docs/findings.md`):
+- the compositor sync layer and `enableLinuxVulkanAsync` do not remove the bad frames; the presenter-side filter was dropped by decision;
+- a driver running start of 8 ms or more (new `driver_xreal.running_start_ms`, now the default) removes them with the hold on;
+- the hold is what causes the judder, and `--reproject` (now on by default in `tools/vr_session.sh`) removes that;
+- Home on at 1920x1080 per eye (now the default size) was confirmed smooth and flicker-free by the wearer.
+The specs in this change describe the shipped behaviour; the sections above are the original plan and are kept as the record.

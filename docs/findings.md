@@ -330,3 +330,7 @@ fallback is active the queue runs up to the swapchain depth ahead of the display
 5 s, and present wait returns within seconds; frame age drops from about 16 ms max to about 1.4 ms once it does.
 
 **Build:** the driver must be linked with `-fno-math-errno` (now in `driver/build.sh`), otherwise a Fedora 44 build needs `sqrtf@GLIBC_2.43`.
+
+**Render size (2026-10-07):** with the defaults above (hold on, running start 8 ms, `--reproject`) and Home on, the Deck's GPU averaged about 56% at
+1280x720 and 58% at 1920x1080 with the head still, SteamVR delivered 60 new frames/s, and the wearer called 1920x1080 per eye "buttery". 1920x1080
+is now the driver default. Heavier content than Home has not been tried.

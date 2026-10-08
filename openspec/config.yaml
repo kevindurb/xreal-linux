@@ -30,7 +30,7 @@ context: |
     and auto-sleep off (sleeping drops them back to a normal 2D mode). The mode can be detected from the DRM mode list; Stabilizer and
     follow cannot be read from the control channel.
   - Required SteamVR settings: power.turnOffScreensTimeout very large and power.pauseCompositorOnStandby false (otherwise the headset
-    is put into standby after 5 s of stillness), a modest per-eye render size (the Deck's GPU is saturated by SteamVR Home), motionSmoothing off.
+    is put into standby after 5 s of stillness), the per-eye render size defaults to the panel's 1920x1080 (confirmed smooth with Home on on the Deck once paced: running start 8 ms, --reproject; lower it for heavier content), motionSmoothing off.
   - SteamVR's Present() means "submitted", not "finished". Imported textures use opaque-fd external memory with SteamVR's exact image
     parameters (same GPU required; AMD verified, other vendors unverified).
   - DASHBOARD BAD FRAMES (worked around, SteamVR's own output): with SteamVR Home's dashboard, hovering a button produced single bad

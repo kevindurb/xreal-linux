@@ -1,45 +1,4 @@
-# glasses-setup Specification
-
-## Purpose
-The conditions the glasses, SteamVR and the desktop must satisfy for the headset to work, and the tools that check or establish them. Implemented by `tools/doctor.sh` and `tools/vr_session.sh`.
-
-## Requirements
-
-### Requirement: Glasses in full SBS
-
-The glasses SHALL be in full side-by-side mode, which presents a single 3840x1080 mode on their DisplayPort output. Their other modes (16:9, 16:10, ultrawide, half SBS) do not give each eye its own image.
-
-#### Scenario: Wrong mode
-
-- **WHEN** `tools/vr_session.sh start` is run and the glasses' output offers anything other than the single 3840x1080 mode
-- **THEN** it refuses to start and says the glasses must be switched to full SBS
-
-### Requirement: Glasses menu settings that cannot be detected
-
-The user SHALL set Follow mode, Stabilizer off, and auto sleep off in the glasses' own menu. The system cannot read the first two, so setup guidance SHALL state them. With the Stabilizer on, or in Anchor mode, the glasses move the image against head motion that the headset already compensates for.
-
-#### Scenario: Setup guidance
-
-- **WHEN** `tools/doctor.sh` finishes
-- **THEN** it reminds the user of Follow mode, Stabilizer off and auto sleep off
-
-### Requirement: SteamVR settings
-
-SteamVR's `steamvr.vrsettings` SHALL force the `xreal` driver and set `power.turnOffScreensTimeout` very large and `power.pauseCompositorOnStandby` to false (the headset has no proximity sensor, so SteamVR otherwise enters standby after about five seconds of stillness and pauses the compositor). Motion smoothing SHOULD be off and the per-eye render size modest on a Steam Deck.
-
-#### Scenario: Default timeout left in place
-
-- **WHEN** `power.turnOffScreensTimeout` is still the five-second default
-- **THEN** `tools/doctor.sh` warns that this causes standby and stutter
-
-### Requirement: Desktop windows must not land on the glasses
-
-At least one display other than the glasses SHALL be enabled so Steam and SteamVR windows have somewhere to open; otherwise, in full SBS, they appear in one eye.
-
-#### Scenario: Glasses are the only display
-
-- **WHEN** only the glasses' output is enabled
-- **THEN** `tools/doctor.sh` warns that desktop windows will appear in one eye
+## MODIFIED Requirements
 
 ### Requirement: Session control
 
@@ -73,6 +32,8 @@ At least one display other than the glasses SHALL be enabled so Steam and SteamV
 
 - **WHEN** `driver_xreal.hold_after_present` is false, or `driver_xreal.running_start_ms` is below 8
 - **THEN** it warns that dashboard frames may glitch and names the setting
+
+## ADDED Requirements
 
 ### Requirement: Lightweight environment option
 

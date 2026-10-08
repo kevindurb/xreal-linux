@@ -148,7 +148,7 @@ private:
 };
 
 struct Settings {
-    int renderWidth = 1280, renderHeight = 720;  // per eye; 1920x1080 saturates the Steam Deck's GPU
+    int renderWidth = 1920, renderHeight = 1080;  // per eye, the panel's size; the Deck held 60 fps with Home on at this size once paced (docs/findings.md)
     int windowWidth = 3840, windowHeight = 1080;  // both eyes side by side on the glasses
     float refreshHz = 60.f;
     float ipd = 0.063f;

@@ -20,7 +20,7 @@
   - run `tools/find_bad_frames.py` on the Mac;
   - record the bad-frame count and the layer's prevented-reuse summary.
 - [x] 2.5 Repeat 2.4 with Home on.
-- [ ] 2.6 User check: the wearer confirms no flicker on the toolbar sweep and smooth motion with the hold off.
+- [x] 2.6 User check: done with the final settings instead (see 4.2); the layer was dropped.
 
 ## 3. Vulkan async setting (second option, or combined)
 
@@ -28,31 +28,24 @@
 - [x] 3.2 Verify with the same sweep capture and bad-frame count as 2.4, then again with both the layer and the async setting on.
 - [x] 3.3 Record in `docs/findings.md` which combination removes the bad frames, with Home on and with Home off.
 
-## 4. Hold default
+## 4. Pacing defaults (replaces "hold default false": the hold stays on)
 
-- [ ] 4.1 If task 2 or 3 gives zero bad frames without the hold, change the driver default of `hold_after_present` to false and remove the explicit `true` from the Deck's `steamvr.vrsettings`. Update `driver/README.md`.
-- [ ] 4.2 Verify:
-  - the driver log says "hold after present off";
-  - the judder report during a smooth simulated pan shows near-zero double steps apart from turnarounds;
-  - `vrcmd --stats` shows Home at about 60 submits/s with no reprojected or dropped frames.
+- [x] 4.1 Add `driver_xreal.running_start_ms` and sweep it (2-12 ms, Home on, hold on). Result: 8 ms or more gives no bad frames. Make 8 ms the driver default and document it in `driver/README.md`.
+- [x] 4.2 Make `--reproject` the default in `tools/vr_session.sh` (`XREAL_REPROJECT=0` turns it off) after `tools/judder_report.py` showed it removes the judder the hold causes. The wearer confirmed no flicker and smooth motion with Home on.
+- [x] 4.3 Make 1920x1080 the default render size after the wearer confirmed it was smooth with Home on.
 
 ## 5. Present-wait recovery
 
 - [x] 5.1 Replace the permanent fallback in `Gfx::draw`: after 3 consecutive timeouts, use the acquire estimate and retry present-wait at most every 5 s with a short timeout. Log each switch.
 - [x] 5.2 Verify with `tools/vr_session.sh start` (presenter and SteamVR started together). Within about 10 s of SteamVR being up, `/tmp/presenter.log` shows present-wait in use again. The driver log shows no "reclaiming" lines after the startup second.
 
-## 6. Bad-frame filter (only if tasks 2 and 3 do not remove the frames)
+## 6. Bad-frame filter
 
-- [ ] 6.1 Add `--filter-bad-frames`. Compute a small downsampled luminance copy of each eye on the GPU before the display blit, and hold back a new frame that differs sharply from the last shown one (or whose eyes disagree) for one refresh. While holding, do not send `USING` for the held-back frame.
-- [ ] 6.2 Verify:
-  - the sweep capture with the hold off and the filter on contains no bad frames;
-  - the presenter report counts held-back frames;
-  - opening the dashboard still appears within one refresh;
-  - a user check confirms no flicker.
+Dropped by decision: it hides a symptom, and working PCVR setups do not need it. No `--filter-bad-frames` was added.
 
 ## 7. Setup and docs
 
-- [x] 7.1 Add a `tools/doctor.sh` check that warns when neither the layer nor the async setting is active, and reports which one is.
-- [ ] 7.2 Verify: run `tools/doctor.sh` with and without the layer installed and check the warning appears only without it.
+- [x] 7.1 Add a `tools/doctor.sh` check that warns when `hold_after_present` is false or `running_start_ms` is below 8. (Replaces the planned layer/async check, since neither helps.)
+- [x] 7.2 Verify: the check's settings logic was run against four synthetic `steamvr.vrsettings` cases; warnings appear only for hold false or running start below 8.
 - [x] 7.3 Document the Home-off aurora option and the chosen workaround in `driver/README.md`. Move the bad-frame entry in `docs/open-questions.md` to `docs/findings.md` with the measured result.
 - [x] 7.4 Update the "KNOWN OPEN BUG" note in `openspec/config.yaml` to match the outcome.

@@ -45,8 +45,9 @@ Found while tuning on a Steam Deck. All are plain SteamVR settings, not driver c
   proximity sensor, so SteamVR decides the user has left after a few seconds without head movement, enters standby and
   pauses the compositor. That showed up as slow presents (`layers=0`) and a stuttery feel. Set the timeout very large and
   `pauseCompositorOnStandby` to false.
-- `driver_xreal.render_width` / `render_height` (per eye): the driver's recommended render size, 1280x720 by default. The
-  Deck's GPU was pinned at 100% at 1920x1080 per eye with SteamVR Home; 1280x720 leaves headroom.
+- `driver_xreal.render_width` / `render_height` (per eye): the driver's recommended render size, 1920x1080 (the panel's size) by default.
+  With Home on the Deck held 60 fps at this size once SteamVR was paced (running start, reprojection); before that it was pinned at
+  100% GPU, so 1280x720 is the fallback for heavier content or weaker GPUs.
 - `driver_xreal.hold_after_present` (default true): holds SteamVR in `PostPresent` until the next running start (`running_start_ms` before
   the glasses' vblank). Set false to compare.
 - `driver_xreal.running_start_ms` (default 8): how long before the glasses' real vblank SteamVR is told the vsync happens, and

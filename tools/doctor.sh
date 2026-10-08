@@ -56,22 +56,11 @@ line("ok" if t >= 600 else "warn", f"power.turnOffScreensTimeout = {t} s (the 5 
 line("ok" if pw.get("pauseCompositorOnStandby", True) is False else "warn", f"power.pauseCompositorOnStandby = {pw.get('pauseCompositorOnStandby', True)}")
 d = j.get("driver_xreal", {})
 print("  [info] " + f"per-eye render size: {d.get('render_width', 1920)}x{d.get('render_height', 1080)}; head height {d.get('head_height', 1.5)} m")
+# SteamVR's dashboard shows single bad frames unless it is paced: hold on and a running start of 8 ms or more (docs/findings.md).
+if d.get("hold_after_present", True) is False: line("warn", "driver_xreal.hold_after_present is false: dashboard frames may glitch (set it true)")
+if d.get("running_start_ms", 8) < 8: line("warn", f"driver_xreal.running_start_ms = {d['running_start_ms']}: dashboard frames may glitch (8 or more)")
 PY
 else warn "no steamvr.vrsettings yet (SteamVR has not been run)"; fi
-
-echo "Dashboard bad frames"
-# SteamVR's compositor can hand over a frame while it is still redrawing it. The compositor sync layer or Vulkan async avoids it.
-LAYER=""
-for d in "$HOME/.local/share/vulkan/implicit_layer.d" "$HOME/.config/vulkan/implicit_layer.d" /usr/share/vulkan/implicit_layer.d /etc/vulkan/implicit_layer.d; do
-  l=$(grep -il "compositor.sync\|compositor_sync" "$d"/*.json 2>/dev/null | head -1)
-  [ -n "$l" ] && { LAYER=$l; break; }
-done
-ASYNC=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("steamvr",{}).get("enableLinuxVulkanAsync", False))' "$CFG" 2>/dev/null)
-[ -n "$LAYER" ] && ok "compositor sync layer installed ($LAYER)"
-[ "$ASYNC" = True ] && ok "steamvr.enableLinuxVulkanAsync is on"
-if [ -z "$LAYER" ] && [ "$ASYNC" != True ]; then
-  warn "neither the compositor sync layer nor steamvr.enableLinuxVulkanAsync is active; the dashboard can show single bad frames (see docs/findings.md)"
-fi
 
 echo "Presenter"
 [ -x "$HERE/presenter/target/release/xreal-presenter" ] && ok "presenter built" || bad "presenter not built (see presenter/README.md)"
