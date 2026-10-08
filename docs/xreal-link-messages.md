@@ -675,6 +675,7 @@ The values are per unit and the document includes the serial number, so it is **
 | 10005 | `NRPowerSaveGetSleepTime` | `18 00` | `22 00`: value 0 |
 | 10008 | `NRProximityIsEnable` | `18 00` | `22 02 10 01`: field 2 = 1, the proximity (wearing) sensor is on |
 | 10044 | `NRProximityGetWearingState` | `18 00` | `22 00`: value 0 (probably "not worn"; meaning inferred) |
+| 10274 | `NRDpSetInputMode` (**setter**) | `1a 02 08 01` (value 1 = side by side; 0 = regular) | `22 00` (success); the display then switched to full SBS, see below |
 | 10047 | `NRGrayscaleCameraCreate` | `18 00` | `22 00` (empty body = success) |
 | 10053 | `NRGrayscaleCameraStart` (inferred id) | `18 00` | `22 00`; four camera frames follow on 52997 |
 | 10054 | `NRGrayscaleCameraStop` (inferred id) | `18 00` | none within 5 s (the stream had already stopped) |
@@ -702,4 +703,11 @@ The service has one wrapper function per grayscale-camera request, laid out back
 - Start and Stop load exactly the ids we sent, which agrees with the camera answering Start.
 - The wrappers sit in the class `DriverInterface<NRGrayscaleCameraInterface>` and are reached through its virtual table, so a direct search for callers finds none. **The integer values the service passes were not recovered**; tracing the virtual calls from `ImpGrayCamera` / `GrayscaleCameraProvider` is the next step if they are needed.
 - The same library has an identical set for the RGB camera (`NRRgbCameraInitSet*`, plus `Release`, `GetPluginState` and a host time offset request, `NRRgbCameraSetHostTimeOffset`).
+
+**Setting full SBS from the host (2026-10-08).** With the glasses in their normal 2D mode (`NRDpGetInputMode` = 0, the Deck saw `1920x1080` and `1920x1200`),
+one `NRDpSetInputMode` request with value 1 (packet `28 22 00 00 00 08 80 00 00 02 1a 02 08 01`) was answered `22 00`. About 0.2 s later the glasses sent
+notifications with id **10086** (not in the SDK table; body `18 02` once, then `18 01` three times, so probably a display state that goes through 2 and
+settles at 1, next to `NRDpGetWorkingState` = 1), and within seconds `NRDpGetInputMode` read 1 and the Deck saw only `3840x1080`. The USB device did not re-enumerate.
+`tools/xreal_session.py` allows this setter only with `--allow-display-mode` and only for the values 0 and 1. Ids 10087 (`NRPowerSaveEnter`) and probably 10088
+sit just after 10086; if they are sent as events they may show when the glasses go to sleep, which has not been observed yet.
 

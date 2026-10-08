@@ -206,9 +206,27 @@ class ControlSession(unittest.TestCase):
                 self.xs.check_allowed(mid, False)
             self.assertTrue(self.xs.check_allowed(mid, True))
 
+    def test_display_mode_setter_needs_its_flag_and_a_valid_value(self):
+        on, off = bytes.fromhex("1a020801"), bytes.fromhex("1a020800")
+        with self.assertRaises(ValueError):
+            self.xs.check_allowed(10274, True, False, on)          # the camera flag does not unlock it
+        self.assertEqual(self.xs.check_allowed(10274, False, True, on), "NRDpSetInputMode")
+        self.assertEqual(self.xs.check_allowed(10274, False, True, off), "NRDpSetInputMode")
+        for bad in (bytes.fromhex("1a020802"), bytes.fromhex("1800"), bytes.fromhex("1a020880"), b""):
+            with self.assertRaises(ValueError):
+                self.xs.check_allowed(10274, True, True, bad)
+
+    def test_display_flag_does_not_unlock_the_camera_or_other_setters(self):
+        for mid in (10047, 10053, 10054, 10284, 10281, 10012):
+            with self.assertRaises(ValueError):
+                self.xs.check_allowed(mid, False, True, bytes.fromhex("1a020801"))
+
+    def test_side_by_side_frame(self):
+        self.assertEqual(self.xs.build_request(10274, bytes.fromhex("1a020801"), 1).hex(" "), "28 22 00 00 00 08 80 00 00 01 1a 02 08 01")
+
     def test_everything_else_is_refused_even_with_the_flag(self):
         # set brightness, set input mode, set space mode, reboot, shutdown, set SDK version, a Release-like id
-        for mid in (10012, 10274, 10284, 10034, 10035, 10014, 10055, 0, 65535):
+        for mid in (10012, 10284, 10034, 10035, 10014, 10055, 0, 65535):
             with self.assertRaises(ValueError):
                 self.xs.check_allowed(mid, True)
 

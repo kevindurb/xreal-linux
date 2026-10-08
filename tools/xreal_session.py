@@ -6,7 +6,8 @@ except the cleanup Stop described below. Meant for finding out whether a host re
 
   * Requests are read, one per line, from a command FIFO:   send <id> [<body hex>]   |   quit
     <id> is decimal or 0x hex; the body defaults to `1800` (the read-only getter body); frame layout is docs/xreal-link-messages.md section 13.
-  * Always allowed: the read-only getters in GETTERS. The camera requests in CAMERA are refused unless --allow-camera was given.
+  * Always allowed: the read-only getters in GETTERS. The camera requests in CAMERA are refused unless --allow-camera was given, and the
+    display input mode setter in SETTERS unless --allow-display-mode was given (and then only with the body for value 0 or 1).
     Nothing else can be sent.
   * On exit (quit, timeout, signal, a lost connection) the tool sends NRGrayscaleCameraStop if, and only if, it sent Start and no Stop since.
   * While connected it also reads the camera stream (52997) and the timestamp stream (52996), counts frames, and keeps the first frames
@@ -37,6 +38,9 @@ GETTERS = {
     10003: "NRPowerSaveIsEnable", 10005: "NRPowerSaveGetSleepTime", 10008: "NRProximityIsEnable", 10044: "NRProximityGetWearingState",
 }
 CAMERA = {10047: "NRGrayscaleCameraCreate", 10053: "NRGrayscaleCameraStart", 10054: "NRGrayscaleCameraStop"}
+# Setters with a numeric value: id -> name; the only accepted bodies are Base{3: {1: value}} for the values listed in SETTER_BODIES.
+SETTERS = {10274: "NRDpSetInputMode"}  # 0 = regular, 1 = side by side
+SETTER_BODIES = {10274: {bytes.fromhex("1a020800"), bytes.fromhex("1a020801")}}
 START, STOP = 10053, 10054
 DEFAULT_BODY = bytes.fromhex("1800")
 TX_TOP_BIT = 0x80000000
@@ -47,10 +51,16 @@ def build_request(msg_id, body, txid):
     return struct.pack(">HI", msg_id, len(payload)) + payload
 
 
-def check_allowed(msg_id, allow_camera):
+def check_allowed(msg_id, allow_camera, allow_display=False, body=None):
     """Return the request's name, or raise ValueError if this tool must not send it."""
     if msg_id in GETTERS:
         return GETTERS[msg_id]
+    if msg_id in SETTERS:
+        if not allow_display:
+            raise ValueError("%d (%s) needs --allow-display-mode" % (msg_id, SETTERS[msg_id]))
+        if body not in SETTER_BODIES[msg_id]:
+            raise ValueError("%d (%s) accepts only the bodies %s" % (msg_id, SETTERS[msg_id], sorted(b.hex() for b in SETTER_BODIES[msg_id])))
+        return SETTERS[msg_id]
     if msg_id in CAMERA:
         if not allow_camera:
             raise ValueError("%d (%s) needs --allow-camera" % (msg_id, CAMERA[msg_id]))
@@ -137,7 +147,7 @@ class Session:
         self.log("event", id=mid, length=len(body), head=body[:24].hex())
 
     def request(self, msg_id, body):
-        name = check_allowed(msg_id, self.a.allow_camera)
+        name = check_allowed(msg_id, self.a.allow_camera, self.a.allow_display_mode, body)
         self.txid += 1
         txid = self.txid
         pkt = build_request(msg_id, body, txid)
@@ -234,7 +244,7 @@ class Session:
         fifo = os.path.join(self.a.dir, "cmd")
         if not os.path.exists(fifo):
             os.mkfifo(fifo, 0o600)
-        self.log("ready", fifo=fifo, allow_camera=self.a.allow_camera)
+        self.log("ready", fifo=fifo, allow_camera=self.a.allow_camera, allow_display_mode=self.a.allow_display_mode)
         while not self.stop_requested.is_set():
             with open(fifo, "r") as f:  # blocks until a writer opens it
                 for line in f:
@@ -273,6 +283,7 @@ def main():
     ap.add_argument("--host", default="169.254.2.1")
     ap.add_argument("--dir", default="/tmp/xreal_session")
     ap.add_argument("--allow-camera", action="store_true", help="permit the camera Create/Start/Stop requests")
+    ap.add_argument("--allow-display-mode", action="store_true", help="permit NRDpSetInputMode with value 0 or 1")
     ap.add_argument("--max-seconds", type=float, default=600)
     a = ap.parse_args()
     os.makedirs(a.dir, exist_ok=True)
