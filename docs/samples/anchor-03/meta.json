@@ -1,0 +1,131 @@
+{
+  "format": 2,
+  "host": "169.254.2.1",
+  "wall_start": 1791466102.4219272,
+  "start_ns": 22962655497145,
+  "end_ns": 23113324946357,
+  "duration_s": 150.669449212,
+  "phases": [
+    {
+      "name": "get-ready",
+      "start_ns": 22962664379626,
+      "seconds": 10.0
+    },
+    {
+      "name": "follow",
+      "start_ns": 22972731069865,
+      "seconds": 15.0
+    },
+    {
+      "name": "toggle-on",
+      "start_ns": 22987856631015,
+      "seconds": 40.0
+    },
+    {
+      "name": "anchor",
+      "start_ns": 23027992616549,
+      "seconds": 30.0
+    },
+    {
+      "name": "toggle-off",
+      "start_ns": 23058131016353,
+      "seconds": 40.0
+    },
+    {
+      "name": "follow",
+      "start_ns": 23098261872432,
+      "seconds": 15.0
+    }
+  ],
+  "note": "latest firmware per wearer; start in follow mode, stabilizer off; glasses toward Deck screen; wearer switches anchor on then off from glasses menu",
+  "ports": {
+    "port52990": {
+      "bytes": 0,
+      "error": null
+    },
+    "port52991": {
+      "bytes": 0,
+      "error": null
+    },
+    "port52992": {
+      "bytes": 0,
+      "error": null
+    },
+    "port52993": {
+      "bytes": 0,
+      "error": null
+    },
+    "port52994": {
+      "bytes": 0,
+      "error": null
+    },
+    "port52995": {
+      "bytes": 0,
+      "error": null
+    },
+    "port52996": {
+      "bytes": 343216,
+      "error": null,
+      "msg_ids": {
+        "10033": {
+          "count": 9032,
+          "per_s": 59.9
+        }
+      },
+      "skipped_bytes": 0
+    },
+    "port52997": {
+      "bytes": 197545378,
+      "error": null,
+      "msg_ids": {
+        "10056": {
+          "count": 1019,
+          "per_s": 6.8
+        }
+      },
+      "skipped_bytes": 0
+    },
+    "port52998": {
+      "bytes": 28203918,
+      "error": null,
+      "msg_ids": {
+        "10294": {
+          "count": 210477,
+          "per_s": 1396.9
+        }
+      },
+      "skipped_bytes": 0
+    },
+    "port52999": {
+      "bytes": 1435,
+      "error": null,
+      "msg_ids": {
+        "10002": {
+          "count": 2,
+          "per_s": 0.0
+        },
+        "10030": {
+          "count": 4,
+          "per_s": 0.0
+        },
+        "10045": {
+          "count": 81,
+          "per_s": 0.5
+        },
+        "10122": {
+          "count": 25,
+          "per_s": 0.2
+        }
+      },
+      "skipped_bytes": 0
+    },
+    "hidraw4": {
+      "bytes": 0,
+      "error": null
+    },
+    "hidraw5": {
+      "bytes": 0,
+      "error": null
+    }
+  }
+}

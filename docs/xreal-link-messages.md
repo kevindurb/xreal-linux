@@ -520,3 +520,16 @@ single-byte key), i.e. it is protected. **Recovering the protocol from it would 
 this project does not do**; the copy used for this check was deleted. The protocol facts in this document come from the host-side
 SDK libraries and from the project's own captures only. Remaining unknowns (which port takes requests, any handshake, the enum values)
 should be settled by observing a working host or by an approved, minimal, read-only probe of the glasses.
+
+
+## 10. Event messages observed on port 52999 during the anchor-mode run (`docs/samples/anchor-03/`)
+
+| Id | Count in 150 s | Payload | Notes |
+|---|---|---|---|
+| 10122 | 25 | protobuf `Base{3: {1: index, 2: float}}` | temperature notifications (45-56 C for sensor 0, 41-50 C for the others), steady through the run |
+| 10045 | 81 | 2 bytes, `18 01` or `18 02` = protobuf field 3, varint 1 or 2 | irregular (0.1 s to 17 s apart), also during the get-ready phase; not tied to the mode switches; id sits next to `NRProximityGetWearingState` (10044), so a wearing-state change notification is plausible (**inferred**) |
+| 10030 | 4 (2 per switch) | 64 raw bytes, not protobuf (it contains pointer-sized values from the glasses' own process): `u32 1` or `2` at offset 0 (index of the pair), `u32` at offset 8 = a seconds counter (1800836685 at the first switch, 1800836754 at the second: 69 s apart) | sent twice within 0.1 s at each anchor-mode switch (30.7 s, 99.2 s) |
+| 10002 | 2 (1 per switch) | 64 raw bytes: `u32 1` at offset 0, **u64 nanosecond device timestamp at offset 12** (1486.512 s, then 1555.072 s) | 0.51 s before the first camera frame and 0.03 s after the last: camera/anchor session **start** and **stop** event |
+
+Decoding note: `10030` and `10002` are binary structs, so a generic protobuf decoder reports them as undecoded (as `tools/xreal_link.py` does).
+Rates measured in the same run: camera 15.0 Hz while on, timestamp stream 59.9 Hz, IMU 999.1 Hz + 397.9 Hz.
