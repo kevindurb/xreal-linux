@@ -116,7 +116,7 @@ Open:
 |---|---|---|
 | `add-6dof-camera-tracking` | 4 done, 25 open | **parked** by the user 2026-10-08 (camera start unsolved, see section 7) |
 | `2026-10-08-add-installable-package` | 27 of 31 | archived; open: 1.1 second-distro run (`--test-pattern`), 4.4 real sleep/wake, 7.2 game mode, 7.3 Flatpak Steam |
-| `calm-splash-screen` | see its tasks.md | code done; the SteamVR/wearer checks (5.1, 5.2, 3.2 and the restart half of 3.4) are open |
+| `2026-10-08-calm-splash-screen` | 9 of 12 | archived; open: 3.4 (fade replay after a SteamVR restart), 5.1 and 5.2 (wearer checks: fade, same in both eyes, comfort vs `--test-pattern`) |
 | `support-other-gpus` | 0 of 17 | not started; its "test pattern" wording (`proposal.md`, `tasks.md` 2.3, `specs/gpu-selection/spec.md`) now means the calm splash for a GPU mismatch, and is to be reworded when that change is next touched |
 | `2026-10-07-fix-dashboard-glitches-and-judder` | archived | done |
 

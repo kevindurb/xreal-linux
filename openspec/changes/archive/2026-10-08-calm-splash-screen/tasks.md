@@ -3,7 +3,7 @@
 ## 1. Splash asset
 
 - [x] 1.1 Add `presenter/splash/make_splash.py` (standard library only, embedded 5x7 bitmap font) that writes the coverage patch `splash.raw` plus its width and height, and a `--png` preview. Verify: running it twice gives byte-identical output, and the preview PNG shows two lens shapes above "Waiting for SteamVR" on a flat background (open it and check).
-- [ ] 1.2 Commit the generated `presenter/splash/splash.raw` and its size file. Verify: `git ls-files presenter/splash` lists them and the raw size equals width x height.
+- [x] 1.2 Commit the generated `presenter/splash/splash.raw` and its size file. Verify: `git ls-files presenter/splash` lists them and the raw size equals width x height.
 
 ## 2. Splash logic
 

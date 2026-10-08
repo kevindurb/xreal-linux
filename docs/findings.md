@@ -629,3 +629,11 @@ The wearer reported nausea from the start-up picture, the red/blue stereo patter
 - Without a driver the window only exists in the standalone modes (`--test-grid`, `--test-pattern`, `--sim-pose`); in a normal session the splash is seen from the moment the driver connects until SteamVR's first frame.
 
 **Not yet measured:** the splash with SteamVR starting (the fallback-frame count while it shows, replacement by SteamVR's frame, the fade replaying after a SteamVR restart) and, above all, whether the wearer finds it comfortable. Nothing about comfort is known yet; the old pattern's nausea is the wearer's report only.
+
+### SteamVR compositor crash, then no recovery (2026-10-08, installed build on the Deck)
+
+Seen while checking the splash: SteamVR presented at 60 fps for about 25 s, then `vrcompositor` crashed (15:55:06) and the presenter showed the splash for good (fallback frames climbed at 60 per second with the driver still connected).
+- **Measured:** the minidump's exception is SIGSEGV at address 0x10 inside `/usr/lib64/libvulkan_radeon.so` (Mesa 26.2.4, RADV), offset 0x1c9f9c, on a compositor thread, right after the compositor created the `geom_reflect_curved` shader pipelines (the dashboard/overlay). The kernel log has the matching segfault line.
+- **Measured:** `vrserver` then started a new compositor, which failed with `VRInitError_Compositor_CreateDriverDirectModeResolveTextures` after `NewSharedVulkanImage failed for image 0` (1344x756, format 43; the first compositor used 1336x752). `vrserver` logged `Failed to unref VRCompositor resource` six times when the first one died. Nothing recovered until SteamVR was restarted.
+- **Not known:** why RADV crashed, and whether our driver's resource handling makes the second allocation fail or SteamVR does it after any compositor crash. Separately, `vrcompositor` also segfaults at every normal shutdown here (jump to a freed address, seen at 15:21, 15:25 and 15:54:17); that is exit noise.
+- The splash worked as designed throughout; its text "Waiting for SteamVR" is misleading in this state because SteamVR is up but has no compositor.
