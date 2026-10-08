@@ -76,9 +76,9 @@ At least one display other than the glasses SHALL be enabled so Steam and SteamV
 
 ### Requirement: Lightweight environment option
 
-The setup guidance SHALL document running SteamVR without Home (`steamvr.enableHomeApp` false) with a compositor background such as `<SteamVR>/resources/backgrounds/aurorasky.png` in `steamvr.background`, as an option for weaker GPUs or heavier content.
+The setup guidance SHALL recommend running SteamVR without Home (`steamvr.enableHomeApp` false) with a compositor background such as `<SteamVR>/resources/backgrounds/aurorasky.png` in `steamvr.background`, as the default: it leaves the GPU to the content, and Home on is an option when there is headroom. `tools/doctor.sh` SHALL report which is set, warning, not failing, when Home is on.
 
 #### Scenario: Home off with the aurora background
 
 - **WHEN** `steamvr.enableHomeApp` is false and `steamvr.background` names `aurorasky.png`
-- **THEN** SteamVR shows the aurora sky and grid floor around the dashboard instead of the Home room
+- **THEN** SteamVR shows the aurora sky and grid floor around the dashboard instead of the Home room, and `tools/doctor.sh` reports Home as off

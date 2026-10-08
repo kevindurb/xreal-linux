@@ -57,6 +57,7 @@ line("ok" if pw.get("pauseCompositorOnStandby", True) is False else "warn", f"po
 d = j.get("driver_xreal", {})
 print("  [info] " + f"per-eye render size: {d.get('render_width', 1920)}x{d.get('render_height', 1080)}; head height {d.get('head_height', 1.5)} m")
 # SteamVR's dashboard shows single bad frames unless it is paced: hold on and a running start of 8 ms or more (docs/findings.md).
+line("ok" if st.get("enableHomeApp", True) is False else "warn", f"steamvr.enableHomeApp = {st.get('enableHomeApp', True)} (recommended false: Home takes about 10 ms of GPU per frame; steamvr.background = {st.get('background')!r})")
 if d.get("hold_after_present", True) is False: line("warn", "driver_xreal.hold_after_present is false: dashboard frames may glitch (set it true)")
 if d.get("running_start_ms", 8) < 8: line("warn", f"driver_xreal.running_start_ms = {d['running_start_ms']}: dashboard frames may glitch (8 or more)")
 PY
