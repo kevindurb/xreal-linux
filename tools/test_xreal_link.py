@@ -181,5 +181,44 @@ class RealCaptures(unittest.TestCase):
             self.assertEqual(xl.decode_pb(p)[0][0], 3)
 
 
+class ControlSession(unittest.TestCase):
+    """tools/xreal_session.py: the frame builder, the allowlist and the response decoder (no hardware)."""
+
+    def setUp(self):
+        import xreal_session as xs
+        self.xs = xs
+
+    def test_get_config_frame_is_the_one_sent_to_the_glasses(self):
+        self.assertEqual(self.xs.build_request(10015, self.xs.DEFAULT_BODY, 1).hex(" "), "27 1f 00 00 00 06 80 00 00 01 18 00")
+
+    def test_transaction_id_has_the_top_bit_and_length_counts_it(self):
+        pkt = self.xs.build_request(10273, bytes.fromhex("1800"), 0x1234)
+        self.assertEqual(struct.unpack(">HI", pkt[:6]), (10273, 6))
+        self.assertEqual(struct.unpack(">I", pkt[6:10])[0], 0x80001234)
+
+    def test_getters_are_always_allowed(self):
+        for mid in (10013, 10015, 10085, 10273):
+            self.assertTrue(self.xs.check_allowed(mid, False))
+
+    def test_camera_requests_need_the_flag(self):
+        for mid in (10047, 10053, 10054):
+            with self.assertRaises(ValueError):
+                self.xs.check_allowed(mid, False)
+            self.assertTrue(self.xs.check_allowed(mid, True))
+
+    def test_everything_else_is_refused_even_with_the_flag(self):
+        # set brightness, set input mode, set space mode, reboot, shutdown, set SDK version, a Release-like id
+        for mid in (10012, 10274, 10284, 10034, 10035, 10014, 10055, 0, 65535):
+            with self.assertRaises(ValueError):
+                self.xs.check_allowed(mid, True)
+
+    def test_decodes_a_numeric_and_an_empty_response(self):
+        self.assertEqual(self.xs.decode_response(bytes.fromhex("22040800 1001".replace(" ", ""))), [(1, "varint", 0), (2, "varint", 1)])
+        self.assertEqual(self.xs.decode_response(bytes.fromhex("2200")), [])
+
+    def test_unparseable_response_is_kept_as_hex(self):
+        self.assertEqual(self.xs.decode_response(b"\xff\xff")["raw"], "ffff")
+
+
 if __name__ == "__main__":
     unittest.main()
