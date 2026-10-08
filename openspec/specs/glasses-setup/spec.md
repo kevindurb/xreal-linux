@@ -82,3 +82,26 @@ The setup guidance SHALL recommend running SteamVR without Home (`steamvr.enable
 
 - **WHEN** `steamvr.enableHomeApp` is false and `steamvr.background` names `aurorasky.png`
 - **THEN** SteamVR shows the aurora sky and grid floor around the dashboard instead of the Home room, and `tools/doctor.sh` reports Home as off
+
+### Requirement: Presenter reads the glasses' calibration and events over the control port
+
+The presenter SHALL, on connecting to the control port (TCP 52999), send only the read-only `NRGlassesGetConfig` request (and `NRDpGetInputMode` with `--set-sbs`), derive the per-eye field of view, IPD and IMU matrices from the reply, send the field of view and IPD to the driver, cache the reply per unit outside the repository under a file name that does not contain the serial number, use the newest cache when the control port is unreachable, and log the glasses' events with timestamps (temperature events at most once a minute). It SHALL send `NRDpSetInputMode` = 1 (`28 22 00 00 00 08 80 00 00 03 1a 02 08 01`) only with `--set-sbs`, and only when the input mode getter reports 0.
+
+#### Scenario: Glasses in regular mode, `--set-sbs`
+
+- **WHEN** the getter returns value 0
+- **THEN** the presenter sends the setter once and logs the reply
+
+#### Scenario: Glasses already in side by side, or no `--set-sbs`
+
+- **WHEN** the getter returns 1, or the flag is absent
+- **THEN** no setter is sent
+
+### Requirement: Analyse why the glasses drop to 2D
+
+The repository SHALL provide `tools/analyze_control_events.py`, which reads a presenter log and, for each drop from full side-by-side to 2D (or a vanished connector), lists the control events in the preceding window (default 30 s) with their meaning, then tabulates which events occur before drops against their overall rate.
+
+#### Scenario: One drop in a log
+
+- **WHEN** the log has a `[display ...] modes:` line that leaves `3840x1080` at +31.5 s and control events before it
+- **THEN** the output lists those events with their offsets before the drop and ends with the comparison table

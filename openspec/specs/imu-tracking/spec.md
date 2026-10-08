@@ -96,3 +96,40 @@ The system SHALL offer a debug mode (`--sim-pose`) that replaces the IMU with a 
 
 - **WHEN** the presenter is started with `--sim-pose --sim-yaw 70`
 - **THEN** the pose sent to the driver sweeps the yaw to the left and right instead of following the IMU
+
+### Requirement: Apply the glasses' factory IMU matrices
+
+The system SHALL multiply each raw gyro and accelerometer vector by the 3x3 `gyro_calib_mat` and `accl_calib_mat` from the glasses' own calibration (read over the control port) before the frame conversion, unless started with `--no-imu-calibration`. It SHALL NOT seed the gyro bias from the calibration or use its temperature table, because the measured stream bias does not match them (`docs/findings.md`). Whether the matrices apply as `M * v` is unverified.
+
+#### Scenario: Calibration available
+
+- **WHEN** the presenter has the calibration and receives a gyro vector
+- **THEN** the filter integrates the vector multiplied by `gyro_calib_mat`
+
+#### Scenario: Calibration disabled
+
+- **WHEN** the presenter is started with `--no-imu-calibration`
+- **THEN** the filter integrates the raw vectors
+
+### Requirement: Optional magnetometer yaw bound
+
+The system SHALL, only when started with `--mag-yaw`, fit a hard-iron offset to the magnetometer records (type 4), wait until the fit has been stable, and then nudge yaw toward the field's horizontal direction recorded at that moment, rejecting readings whose strength departs from the fitted one. Without the flag the magnetometer SHALL NOT affect the pose.
+
+#### Scenario: Gyro yaw drifted after calibration
+
+- **WHEN** `--mag-yaw` is set, the magnetometer has been calibrated by rotating the glasses through many directions, and the filter's yaw is wrong by 20 degrees with the glasses still
+- **THEN** the yaw error shrinks to a few degrees (checked with synthetic data only; not yet on hardware)
+
+### Requirement: Guided magnetometer calibration and report
+
+The system SHALL provide `--mag-calibrate`, which without SteamVR reads the magnetometer records while the wearer turns the glasses through many directions, prints the sample count, the number of the 26 direction bins visited, the fitted offset, per-axis scale and radius and the residual, and saves the fit for this unit (in a file named by a hash, never by the serial number) only when at least 21 directions were visited, at least 1000 thinned samples were collected, the residual is at most 10 % of the radius and the scales are within 0.5 to 2. A cloud of samples spread over less than 10 microtesla SHALL count as no directions. With `--mag-yaw`, a saved calibration SHALL be applied (before the frame conversion) instead of learning the offset, and `--mag-report` SHALL hold still for 60 s and print the yaw drift of the filter with and without the correction on the same samples. None of this is validated on real magnetometer data.
+
+#### Scenario: Wearer covers the sphere
+
+- **WHEN** the samples have a fixed offset and per-axis gains and cover the sphere (synthetic data with noise)
+- **THEN** the fit recovers the offset within about 0.6 microtesla and equalises the axes within 3 %, and the calibration is saved
+
+#### Scenario: Glasses resting on a table
+
+- **WHEN** the samples vary by under a few microtesla
+- **THEN** no directions are counted and nothing is saved

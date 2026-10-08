@@ -536,3 +536,25 @@ Fresh replug (2D mode, no setter sent), one connection, camera requests with the
 - **The burst is once per replug in every variant tried**: Start, a repeated Start, and Stop then Start all answer success and send nothing more. The streams on 52996 stayed at 120/s throughout and the USB device did not change.
 - **The `InitSet*` values are not recoverable from ControlGlasses 3.1.0.** The service only registers and handles the requests (the registration code at `0x1b67a50` to `0x1b717f4` is static constructors; the wrappers' only callers are their own request handlers); `libnr_api.so` and `libnr_loader.so` only export the `NRGrayscaleCameraInitSet*Base` functions, and no other library or the dex files call them. The values are chosen by the SDK's callers (an app or tracking plugin), so they would have to come from a different package (for example the Nebula APK) or from the public SDK headers.
 - **Still untried:** Create again after a Stop, and the `InitSet*` requests between Create and Start.
+
+### The factory IMU bias does not match the stream (2026-10-08, read-only, glasses at rest on a desk)
+
+A 12 s capture of the IMU stream (about 12,000 samples, nothing sent) against the config's IMU block:
+
+| Quantity | Stream mean | Factory value |
+|---|---|---|
+| gyro (rad/s) | -0.00653, -0.00036, -0.00020 (sd about 0.002, 0.001, 0.001) | `gyro_bias` -0.01126, -0.00156, 0.00007; its temperature table gives -0.0097 to -0.0117 in X over 22 to 43 C |
+| accel (m/s^2) | -0.062, -9.04, -3.72, length 9.78 | `accel_bias` 0.0117, 0.0418, 0.0012 |
+
+So the stream is not already bias-corrected (the mean is not zero), but the factory bias is not the stream's offset either (X differs by 0.0048 rad/s, 0.27 deg/s), and which temperature sensor belongs to the IMU is unknown. The presenter therefore keeps estimating the bias online and applies only the factory 3x3 matrices (gyro scale about 1.0058, 1.0000, 1.0060). The matrix convention (`M * v`) is not verified.
+
+The presenter now reads the config on every control-port connection, sends the display-derived field of view and IPD to the driver (message type 7), and logs the glasses' events (`[control +T s] event ...`), which is the data for the open question of why the glasses drop to 2D.
+
+
+### Display distortion grid, the magnetometer at rest, and how to find the 2D drop-out cause (2026-10-08)
+
+**Display distortion grid** (`display_distortion.left_display` / `right_display` in the config, read from the unit): 61 columns x 39 rows, four numbers per point: the panel pixel (x 0-1920 and y 0-1216, 32 apart) and a second position in panel pixels. The second position differs from the first by under 1 px at the centre, 10-12 px sideways at the mid-edges and 22-26 px both ways at the corners (about 1.3 % of the width); the corners move **outward** (for example (0,0) to about (-22,-14)), the rows run past the 1200-row panel. **Direction (inferred, not verified):** read as "the panel pixel is seen at this position of the ideal picture", the optics magnify the edges (pincushion), so to show the ideal picture each panel pixel must sample the ideal picture at the listed position; that is what the shader does (`--factory-distortion`), and it is the natural lookup for a fragment shader (the grid is indexed by output pixel). If the vendor meant the inverse, the edges would be bent the wrong way and `--factory-distortion-reversed` (first-order inverse) would look right instead. The 1080-row picture is assumed centred in the 1200 rows (panel y = picture y + 60); that is the same unmeasured assumption as the vertical field of view. Runtime check on the Deck (own screen, no glasses): the pass runs with no errors and the test grid's frame bends toward the edges as the grid says; whether it matches the optics is for the wearer to judge.
+
+**Magnetometer at rest, new reading:** on the glasses lying on a desk after the replug the field read (-61, 5, 52) uT, **81 uT** in magnitude, at 400 records/s, against 49.6 uT with components (-24.5, 10.5, -41.7) in the first captures. The orientation differs, but 81 against 50 uT means the hard-iron offset is not constant between sessions (display state, firmware, or magnetic parts near the desk), so a saved calibration may go stale. The collector counts a still sensor as no directions (its noise cloud has every direction around its own centre), which an earlier version got wrong.
+
+**The 2D drop-outs:** the presenter now logs every change of the connector mode list next to the glasses' events on one clock; `tools/analyze_control_events.py /tmp/presenter.log` lists the events before each drop. No drop has been captured with the new logging yet.

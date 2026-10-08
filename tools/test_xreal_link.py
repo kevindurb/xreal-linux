@@ -253,5 +253,38 @@ class ControlSession(unittest.TestCase):
         self.assertEqual(self.xs.decode_response(b"\xff\xff")["raw"], "ffff")
 
 
+class ControlEventAnalysis(unittest.TestCase):
+    LOG = """[control +1.0s] connected to 169.254.2.1:52999
+[display +1.0s] modes: 3840x1080
+[control +10.0s] event 10045 (2 bytes) 1802
+[control +30.0s] event 10086 (2 bytes) 1802
+[control +31.0s] event 10045 (2 bytes) 1801
+[display +31.5s] modes: 1920x1080 1920x1200
+[control +60.0s] event 10045 (2 bytes) 1801
+[display +70.0s] modes: 3840x1080
+"""
+
+    def test_a_drop_lists_the_events_before_it(self):
+        import analyze_control_events as ace
+        events, modes = ace.parse(self.LOG.splitlines())
+        self.assertEqual(len(events), 4)
+        drop = ace.drops(modes)
+        self.assertEqual([t for t, _ in drop], [31.5])
+        text = ace.report(events, modes, 30.0)
+        self.assertIn("1 drop(s) to 2D", text)
+        self.assertIn("event 10086", text)
+        self.assertNotIn("+60.0", text)
+
+    def test_no_drop_when_the_modes_never_leave_side_by_side(self):
+        import analyze_control_events as ace
+        _, modes = ace.parse(["[display +1.0s] modes: 3840x1080", "[display +9.0s] modes: 3840x1080"])
+        self.assertEqual(ace.drops(modes), [])
+
+    def test_a_vanished_connector_counts_as_a_drop(self):
+        import analyze_control_events as ace
+        _, modes = ace.parse(["[display +1.0s] modes: 3840x1080", "[display +9.0s] modes: no connector"])
+        self.assertEqual(len(ace.drops(modes)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

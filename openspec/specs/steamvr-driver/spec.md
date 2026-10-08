@@ -106,3 +106,17 @@ The driver SHALL be built with a statically linked C++ runtime and no dependenci
 
 - **WHEN** the built library's dynamic dependencies are listed
 - **THEN** they contain only libm and libc
+
+### Requirement: Field of view and IPD from the glasses' calibration
+
+The driver SHALL accept a CONFIG message (type 7: IPD and the left, right, top and bottom raw projection tangents) from the presenter, wait up to about two seconds for it when the HMD activates, and then report that IPD and return those tangents from `GetProjectionRaw`. Without the message it SHALL use the previous constants (half tangents 0.3857 and 0.2190, IPD 64 mm). It SHALL ignore a message whose tangents have the wrong signs or whose IPD is outside 40 to 90 mm.
+
+#### Scenario: Presenter running first
+
+- **WHEN** the presenter has read the calibration and SteamVR then starts the driver
+- **THEN** the driver log says it is using the glasses' own calibration and `GetProjectionRaw` returns the sent tangents
+
+#### Scenario: No presenter
+
+- **WHEN** no presenter answers within the wait
+- **THEN** the driver activates with the default field of view

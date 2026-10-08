@@ -132,3 +132,26 @@ With `--reproject` the presenter SHALL show, on every refresh, the newest SteamV
 
 - **WHEN** the presenter runs with `--reproject --sim-pose --sim-yaw 40` and `--dump` captures 480 refreshes
 - **THEN** `tools/judder_report.py` reports fewer double shifts than the same capture without `--reproject`
+
+### Requirement: Optional factory display-distortion correction
+
+The presenter SHALL, only when started with `--factory-distortion` (or `--factory-distortion-reversed`), move each output pixel through the glasses' factory display-distortion grid for that eye (61 x 39 points, 32 panel pixels apart) before reprojecting, assuming each eye's 1080-row picture is centred in the panel's 1200 rows. Without the flag, and while the grid has not arrived, it SHALL draw without the correction. `--test-grid` SHALL draw a straight-line grid (120 picture pixels apart, with a frame and centre cross) through the same pass instead of the eye images, also when SteamVR is not connected, so the correction can be judged without SteamVR. The direction of the grid is not verified on hardware; `--factory-distortion-reversed` applies the opposite displacement to compare.
+
+#### Scenario: Grid on, test pattern
+
+- **WHEN** the presenter runs with `--test-grid --factory-distortion` and the control port has delivered the grids
+- **THEN** it logs that the grid was loaded and draws the test grid with the frame's straight edges bent by the factory displacement (up to about 25 px at the corners)
+
+#### Scenario: Grid off
+
+- **WHEN** neither distortion flag is given
+- **THEN** pixels are not moved: an identity grid and no grid draw the same picture
+
+### Requirement: Log display-mode changes with the control events
+
+The presenter SHALL log every change of the glasses' connector mode list as `[display +T s] modes: ...`, on the same clock as the `[control +T s]` event lines, so that `tools/analyze_control_events.py` can list the events that preceded each drop from full side-by-side (a single `3840x1080` mode) to 2D.
+
+#### Scenario: The glasses drop to 2D
+
+- **WHEN** the mode list stops being exactly `3840x1080`
+- **THEN** a `[display ...]` line is logged and the analyser reports the control events in the 30 s before it

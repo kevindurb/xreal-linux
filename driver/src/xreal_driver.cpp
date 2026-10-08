@@ -68,7 +68,8 @@ static const uint32_t kUsageFlags = kUsageTransferSrc | kUsageSampled | kUsageIn
 //   type 4 POSE:    [4, imu_ts_lo, imu_ts_hi, w, x, y, z, valid, wx, wy, wz, host_ns_lo, host_ns_hi]
 //   type 5 VBLANK:  [5, sequence, monotonic_ns_lo, monotonic_ns_hi]   (0 ns: the time of arrival is the best estimate)
 //   type 6 USING:   [6, frame_number]   it reads that frame from now on and has released every older one
-enum MsgType : uint32_t { kMsgSet = 1, kMsgDestroy = 2, kMsgPresent = 3, kMsgPose = 4, kMsgVblank = 5, kMsgUsing = 6 };
+//   type 7 CONFIG:  [7, ipd_m, left, right, top, bottom]   f32 bits; the glasses' own field of view (raw projection tangents) and IPD
+enum MsgType : uint32_t { kMsgSet = 1, kMsgDestroy = 2, kMsgPresent = 3, kMsgPose = 4, kMsgVblank = 5, kMsgUsing = 6, kMsgConfig = 7 };
 
 class PresenterLink {
 public:
@@ -240,10 +241,17 @@ static void MatToQuat(const vr::HmdMatrix34_t &a, float q[4]) {
     }
 }
 
+// The per-unit geometry the presenter reads from the glasses; until it arrives the constants below are used.
+struct Geometry {
+    std::atomic<bool> have{false};
+    std::atomic<float> fov[4]{{-0.3857f}, {0.3857f}, {-0.2190f}, {0.2190f}};  // left, right, top, bottom
+    std::atomic<float> ipd{0.064f};
+};
+
 // ---- display geometry --------------------------------------------------------------------------
 class DisplayComponent : public vr::IVRDisplayComponent {
 public:
-    explicit DisplayComponent(const Settings &s) : s_(s) {}
+    DisplayComponent(const Settings &s, const Geometry &g) : s_(s), g_(g) {}
     void GetWindowBounds(int32_t *x, int32_t *y, uint32_t *w, uint32_t *h) override {
         *x = 0; *y = 0; *w = s_.windowWidth; *h = s_.windowHeight;
     }
@@ -257,8 +265,7 @@ public:
         *x = eye == vr::Eye_Left ? 0 : s_.windowWidth / 2;
     }
     void GetProjectionRaw(vr::EVREye, float *l, float *r, float *t, float *b) override {
-        // Mean of both eyes' factory display intrinsics, assuming the 1080-row picture sits unscaled in the 1200-row panel.
-        *l = -0.3857f; *r = 0.3857f; *t = -0.2190f; *b = 0.2190f;
+        *l = g_.fov[0]; *r = g_.fov[1]; *t = g_.fov[2]; *b = g_.fov[3];
     }
     vr::DistortionCoordinates_t ComputeDistortion(vr::EVREye, float u, float v) override {
         vr::DistortionCoordinates_t c{};
@@ -270,12 +277,13 @@ public:
 
 private:
     Settings s_;
+    const Geometry &g_;
 };
 
 // ---- direct mode: swap textures come from SteamVR as dma-bufs ----------------------------------
 class DirectModeComponent : public vr::IVRDriverDirectModeComponent {
 public:
-    explicit DirectModeComponent(Pacing &pacing) : pacing_(pacing) {}
+    DirectModeComponent(Pacing &pacing, Geometry &geometry) : pacing_(pacing), geometry_(geometry) {}
     ~DirectModeComponent() { DestroyAllSwapTextureSets(0, true); }
 
     void CreateSwapTextureSet(uint32_t pid, const SwapTextureSetDesc_t *desc, SwapTextureSet_t *out) override {
@@ -422,6 +430,14 @@ public:
             } else if (w[0] == kMsgVblank) {
                 int64_t t = (int64_t)((uint64_t)w[2] | ((uint64_t)w[3] << 32));
                 in.vblankNs = t ? t : NowNs();
+            } else if (w[0] == kMsgConfig) {
+                float fov[4] = {BitsToFloat(w[2]), BitsToFloat(w[3]), BitsToFloat(w[4]), BitsToFloat(w[5])};
+                float ipd = BitsToFloat(w[1]);
+                if (fov[0] < 0 && fov[1] > 0 && fov[2] < 0 && fov[3] > 0 && ipd > 0.04f && ipd < 0.09f) {
+                    for (int i = 0; i < 4; i++) geometry_.fov[i] = fov[i];
+                    geometry_.ipd = ipd;
+                    geometry_.have = true;
+                }
             } else if (w[0] == kMsgUsing) {
                 presenterReleases_ = true;
                 while (!offered_.empty() && (int32_t)(offered_.front().frame - w[1]) < 0) offered_.pop_front();
@@ -529,6 +545,7 @@ private:
     }
 
     Pacing &pacing_;
+    Geometry &geometry_;
     std::mutex mutex_;
     std::condition_variable released_;
     std::vector<TextureSet *> sets_;
@@ -559,8 +576,8 @@ public:
         pacing_.holdAfterPresent = settings_.holdAfterPresent;
         pacing_.runningStartNs = (int64_t)(settings_.runningStartMs * 1e6);
         pacing_.holdMaxNs = settings_.holdMaxMs < 0 ? -1 : (int64_t)(settings_.holdMaxMs * 1e6);
-        display_ = std::make_unique<DisplayComponent>(settings_);
-        direct_ = std::make_unique<DirectModeComponent>(pacing_);
+        display_ = std::make_unique<DisplayComponent>(settings_, geometry_);
+        direct_ = std::make_unique<DirectModeComponent>(pacing_, geometry_);
     }
 
     const std::string &Serial() const { return settings_.serial; }
@@ -568,11 +585,16 @@ public:
     vr::EVRInitError Activate(uint32_t id) override {
         id_ = id;
         active_ = true;
+        // The presenter, started first, sends the glasses' own field of view and IPD as soon as the link is up.
+        PresenterInput unused;
+        for (int waited = 0; waited < 2000 && !geometry_.have; waited += 50) direct_->PollMessages(unused, 50);
+        Log(geometry_.have ? "using the glasses' own calibration: ipd %.1f mm, half tangents %.4f x %.4f" : "no calibration from the presenter; using the default field of view (%.1f mm, %.4f x %.4f)",
+            geometry_.ipd * 1000.f, geometry_.fov[1].load(), geometry_.fov[3].load());
         auto c = vr::VRProperties()->TrackedDeviceToPropertyContainer(id);
         auto *p = vr::VRProperties();
         p->SetStringProperty(c, vr::Prop_ModelNumber_String, settings_.model.c_str());
         p->SetStringProperty(c, vr::Prop_ManufacturerName_String, "XREAL");
-        p->SetFloatProperty(c, vr::Prop_UserIpdMeters_Float, settings_.ipd);
+        p->SetFloatProperty(c, vr::Prop_UserIpdMeters_Float, geometry_.have ? geometry_.ipd.load() : settings_.ipd);
         p->SetFloatProperty(c, vr::Prop_DisplayFrequency_Float, settings_.refreshHz);
         p->SetFloatProperty(c, vr::Prop_UserHeadToEyeDepthMeters_Float, 0.f);
         p->SetFloatProperty(c, vr::Prop_SecondsFromVsyncToPhotons_Float, settings_.VsyncToPhotons());
@@ -672,6 +694,7 @@ private:
     }
 
     Settings settings_;
+    Geometry geometry_;
     std::unique_ptr<DisplayComponent> display_;
     std::unique_ptr<DirectModeComponent> direct_;
     uint32_t id_ = vr::k_unTrackedDeviceIndexInvalid;
