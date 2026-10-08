@@ -466,7 +466,9 @@ public:
     // glasses present; otherwise says why in the log. The caller must not hold mutex_.
     bool WaitForGlasses(int timeoutMs) {
         PresenterInput unused;
-        for (int waited = 0; waited < timeoutMs; waited += 50) {
+        // Real time, not iterations: PollMessages returns as soon as the presenter sends anything (it streams poses), so an iteration can be much shorter than 50 ms.
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        while (std::chrono::steady_clock::now() < deadline) {
             PollMessages(unused, 50);
             std::lock_guard<std::mutex> lock(mutex_);
             if (!helloReplied_) continue;

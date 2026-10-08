@@ -257,7 +257,7 @@ fn imu() -> Imu {
 
 fn more_than_one_display() -> Option<bool> {
     let out = std::process::Command::new("kscreen-doctor").arg("-o").env("QT_QPA_PLATFORM", "wayland").output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout).replace('\u{1b}', "");
+    let text = strip_ansi(&String::from_utf8_lossy(&out.stdout));
     let (mut enabled, mut current) = (0, false);
     for l in text.lines() {
         if l.contains("Output:") {
@@ -268,6 +268,25 @@ fn more_than_one_display() -> Option<bool> {
         }
     }
     Some(enabled >= 2)
+}
+
+/// kscreen-doctor colours its output; remove `ESC [ ... letter` sequences.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for n in chars.by_ref() {
+                if n.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn cap_sys_nice(env: &Env) -> Option<bool> {
@@ -313,10 +332,17 @@ pub fn gather(env: &Env) -> Facts {
     }
 }
 
-/// Another process with this name (this process, which is also called xreal-presenter, does not count).
+/// Another presenter: a process called `xreal-presenter` that is not one of this tool's own commands (the AppImage runtime keeps a
+/// process of that name next to the one running `check`).
 fn process_running(name: &str) -> bool {
     let me = std::process::id().to_string();
-    std::fs::read_dir("/proc").into_iter().flatten().flatten().any(|e| e.file_name().to_string_lossy() != me.as_str() && std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == name))
+    std::fs::read_dir("/proc").into_iter().flatten().flatten().any(|e| {
+        if e.file_name().to_string_lossy() == me.as_str() || !std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == name) {
+            return false;
+        }
+        let cmdline = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
+        !cmdline.split(|b| *b == 0).skip(1).any(|a| matches!(a, b"setup" | b"check" | b"fix" | b"status" | b"uninstall" | b"restore-display" | b"help"))
+    })
 }
 
 #[cfg(test)]
@@ -412,6 +438,12 @@ mod tests {
         assert!(lines.iter().filter(|l| l.level == Level::Warn).count() >= 5, "{lines:#?}");
         assert!(lines.iter().any(|l| l.text.contains("hold_after_present") && l.level == Level::Warn));
         assert!(lines.iter().any(|l| l.text.contains("running_start_ms = 4")));
+    }
+
+    #[test]
+    fn colour_codes_are_removed_from_kscreen_output() {
+        assert_eq!(strip_ansi("\u{1b}[0;32menabled\u{1b}[0m"), "enabled");
+        assert_eq!(strip_ansi("plain"), "plain");
     }
 
     #[test]

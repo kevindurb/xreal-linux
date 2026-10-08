@@ -24,8 +24,8 @@ impl Env {
         let dir = |var: &str, rel: &str| std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home.join(rel));
         let data_home = dir("XDG_DATA_HOME", ".local/share");
         let exe = std::env::current_exe().map_err(|e| format!("cannot find myself: {e}"))?;
-        // `~/.steam/steam` is a symlink Steam keeps pointing at its real directory; fall back to the usual place.
-        let steam_root = [home.join(".steam/steam"), data_home.join("Steam")].into_iter().find(|p| p.join("steamapps").is_dir()).unwrap_or_else(|| data_home.join("Steam"));
+        // Steam's usual directory, else the `~/.steam/steam` symlink it keeps pointing at its real one.
+        let steam_root = [data_home.join("Steam"), home.join(".steam/steam")].into_iter().find(|p| p.join("steamapps").is_dir()).unwrap_or_else(|| data_home.join("Steam"));
         Ok(Env {
             state_home: dir("XDG_STATE_HOME", ".local/state"),
             config_home: dir("XDG_CONFIG_HOME", ".config"),
@@ -80,6 +80,10 @@ impl Env {
     }
     /// The driver shipped in this bundle.
     pub fn bundled_driver(&self) -> PathBuf {
+        // `XREAL_DRIVER_DIR`: a checkout's driver/xreal, for the scripts in tools/.
+        if let Some(d) = std::env::var_os("XREAL_DRIVER_DIR").filter(|d| !d.is_empty()) {
+            return PathBuf::from(d);
+        }
         self.bundle.join("driver").join("xreal")
     }
     pub fn bundled_version(&self) -> Option<Version> {

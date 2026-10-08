@@ -592,3 +592,23 @@ The config's `display.target_q_left_display` and `target_q_right_display` (Hamil
 - SteamVR on the Deck loaded the sniper-built driver (`Loaded server driver xreal ... driver_xreal.so`, `HMD activated`, `connected to presenter`) and ran at 60.0 new SteamVR frames/s.
 - The presenter built in the same SDK (rustup minimal profile, `cargo build --release`) needs libdl, libgcc_s, libpthread, libm, libc; **highest `GLIBC_2.30`**. On the Deck it presented SteamVR at 60.0 fps / 60.0 new frames/s (reprojection on). Run on the Fedora 44 Kinoite dev machine it links and starts, then stops because that machine has no display (`neither WAYLAND_DISPLAY nor ... is set`): **a test pattern on a second distro is not yet shown.**
 - `debian:bullseye-slim` as the alternative base could not be tried: `apt-get` in the rootless container installed nothing, so there was no `g++`. Not a finding about the base; the SDK was chosen because it is Steam's own runtime.
+
+### Cold start through the socket unit and the AppImage (2026-10-08, Deck, glasses in a 2D mode)
+
+`xreal-linux.socket` enabled by `setup`, the installed AppImage as the service, SteamVR started with `steam steam://run/250820`. Times are wall clock from the journal and `vrserver.txt`:
+
+| Event | Time | Since the driver's first connect |
+|---|---|---|
+| driver connects to the socket (queued, no presenter yet) | 13:38:48.171 | 0 |
+| presenter process's first output (AppImage mounted, process running) | 48.231 | 0.06 s |
+| setter `NRDpSetInputMode` = 1 sent and accepted | 48.27 / 48.32 | 0.1 s |
+| presenter accepts the driver's connection | 48.737 | 0.57 s |
+| presenter tells the driver the glasses are present (the driver waited for it in `Init`) | 50.143 | 1.97 s |
+| output offers the single `3840x1080` mode | 50.234 | 2.06 s |
+| window opened on `DP-1` (after the 1 s settle) and first SteamVR frame presented | 51.863 / 51.866 | 3.69 s |
+
+- The AppImage mount costs well under 0.1 s here; the time goes to the 2D to full SBS switch (about 1.9 s until the output returns) and the 1 s settle before a window opens.
+- The driver's handshake wait is 30 s, so SteamVR did not give up; with the glasses already in SBS no setter is sent and the reply comes immediately.
+- A first version of the driver counted its handshake wait in 50 ms iterations; `PollMessages` returns as soon as the presenter sends a pose (every few ms), so the 30 s wait ran out after 1.8 s and the driver reported no headset. Fixed with a real-time deadline.
+- The window must not be given fullscreen/windowed changes before the compositor maps it: right after creation `current_monitor()` is `None`, and acting on that (leaving fullscreen) put the window on the internal screen; the follow logic now waits for a known monitor.
+- **Display mode round trip:** with the glasses in `1920x1080 1920x1200` (2D) before, the mode list after the session is identical, also after `kill -9` of the presenter (the unit's `ExecStopPost` restores) and with the glasses already in SBS (nothing is sent).

@@ -382,6 +382,31 @@ enum Next {
     Closed,
 }
 
+/// What `ensure_sbs` left the glasses in: whether the setter went out, and whether full SBS is now expected (so a later drop is worth noticing).
+struct Ensured {
+    sent: bool,
+    expect_sbs: bool,
+}
+
+/// How often the input mode is read while a session runs with full SBS expected (a read-only getter).
+const MODE_POLL: Duration = Duration::from_secs(5);
+
+/// What reading the input mode in the middle of a session says.
+#[derive(Debug, PartialEq)]
+enum Poll {
+    StillSbs,
+    Dropped,
+    NoAnswer,
+}
+
+fn judge_poll(reply: Option<&[u8]>) -> Poll {
+    match reply.and_then(reply_value) {
+        Some(0) => Poll::Dropped,
+        Some(_) => Poll::StillSbs,
+        None => Poll::NoAnswer,
+    }
+}
+
 /// What to do about the input mode after reading it.
 #[derive(Debug, PartialEq)]
 enum SbsPlan {
@@ -487,7 +512,7 @@ impl Conn {
     }
 
     /// Read the input mode and, only if the plan says so, set full side-by-side once. Returns whether the setter was sent.
-    fn ensure_sbs(&mut self, sent_in_run: u32) -> bool {
+    fn ensure_sbs(&mut self, sent_in_run: u32) -> Ensured {
         let mode = self.request(GET_INPUT_MODE, 2, &GETTER_BODY, Duration::from_secs(5)).as_deref().and_then(reply_value);
         if let (Some(m), Some(dir)) = (mode, state_dir()) {
             if let Some(prev) = record_for_mode(m, read_record(&dir)) {
@@ -499,23 +524,35 @@ impl Conn {
         match plan_sbs(mode, false, sent_in_run) {
             SbsPlan::Send => {
                 println!("[control +{:.1}s] input mode is regular; sending NRDpSetInputMode = side by side ({} of at most {} this run)", uptime_s(), sent_in_run + 1, MAX_SBS_SETS);
-                match self.request(SET_INPUT_MODE, 3, &SBS_BODY, Duration::from_secs(5)).as_deref() {
+                let accepted = match self.request(SET_INPUT_MODE, 3, &SBS_BODY, Duration::from_secs(5)).as_deref() {
                     Some(reply) => match reply_status(reply) {
-                        Some(0) => println!("[control +{:.1}s] NRDpSetInputMode accepted", uptime_s()),
-                        Some(code) => eprintln!("[control +{:.1}s] NRDpSetInputMode rejected with status {code}; not retrying", uptime_s()),
-                        None => eprintln!("[control +{:.1}s] NRDpSetInputMode reply not understood; not retrying", uptime_s()),
+                        Some(0) => {
+                            println!("[control +{:.1}s] NRDpSetInputMode accepted", uptime_s());
+                            true
+                        }
+                        Some(code) => {
+                            eprintln!("[control +{:.1}s] NRDpSetInputMode rejected with status {code}; not retrying", uptime_s());
+                            false
+                        }
+                        None => {
+                            eprintln!("[control +{:.1}s] NRDpSetInputMode reply not understood; not retrying", uptime_s());
+                            false
+                        }
                     },
-                    None => eprintln!("[control +{:.1}s] no reply to NRDpSetInputMode; not retrying", uptime_s()),
-                }
-                true
+                    None => {
+                        eprintln!("[control +{:.1}s] no reply to NRDpSetInputMode; not retrying", uptime_s());
+                        false
+                    }
+                };
+                Ensured { sent: true, expect_sbs: accepted }
             }
             SbsPlan::AlreadySet(v) => {
                 println!("[control +{:.1}s] input mode is already {v}; not sending the setter", uptime_s());
-                false
+                Ensured { sent: false, expect_sbs: v == 1 }
             }
             SbsPlan::Skip(why) => {
                 eprintln!("[control +{:.1}s] not sending the setter: {why}", uptime_s());
-                false
+                Ensured { sent: false, expect_sbs: false }
             }
         }
     }
@@ -562,14 +599,34 @@ pub fn run(shared: SharedCalibration, set_sbs: bool, status: Arc<crate::link::Gl
                 status.set_reachable(false);
             }
         }
-        if set_sbs && c.ensure_sbs(sbs_sent) {
-            sbs_sent += 1;
+        let mut expect_sbs = false;
+        if set_sbs {
+            let e = c.ensure_sbs(sbs_sent);
+            sbs_sent += e.sent as u32;
+            expect_sbs = e.expect_sbs;
         }
+        let mut last_poll = Instant::now();
         loop {
-            match c.read_frame(Duration::from_secs(30)) {
+            match c.read_frame(Duration::from_secs(1)) {
                 Next::Frame(id, payload) => c.log_event(id, &payload),
                 Next::Quiet => {}
                 Next::Closed => break,
+            }
+            // The glasses can drop to 2D (sleep, replug) without closing this connection: notice it and reconnect, which sets full SBS
+            // again within the per-connection and per-run limits. Only when full SBS is expected, so a limit that was reached is not retried.
+            if expect_sbs && last_poll.elapsed() >= MODE_POLL {
+                last_poll = Instant::now();
+                match judge_poll(c.request(GET_INPUT_MODE, 5, &GETTER_BODY, Duration::from_secs(3)).as_deref()) {
+                    Poll::StillSbs => {}
+                    Poll::Dropped => {
+                        println!("[control +{:.1}s] the glasses dropped to the regular mode; reconnecting to set full SBS again", uptime_s());
+                        break;
+                    }
+                    Poll::NoAnswer => {
+                        println!("[control +{:.1}s] no answer to the input mode check; reconnecting", uptime_s());
+                        break;
+                    }
+                }
             }
         }
         println!("[control +{:.1}s] connection closed", uptime_s());
@@ -735,6 +792,14 @@ mod tests {
         assert_eq!(plan_sbs(Some(0), false, MAX_SBS_SETS), SbsPlan::Skip("the setter limit for this run is reached"));
         assert_eq!(plan_sbs(Some(0), false, MAX_SBS_SETS - 1), SbsPlan::Send);
         assert!(matches!(plan_sbs(None, false, 0), SbsPlan::Skip(_)));
+    }
+
+    #[test]
+    fn a_mode_check_in_the_middle_of_a_session_tells_a_drop_from_silence() {
+        assert_eq!(judge_poll(Some(&[0x22, 0x02, 0x10, 0x01])), Poll::StillSbs);
+        assert_eq!(judge_poll(Some(&[0x22, 0x00])), Poll::Dropped);
+        assert_eq!(judge_poll(None), Poll::NoAnswer);
+        assert_eq!(judge_poll(Some(&[0x00])), Poll::NoAnswer);
     }
 
     #[test]

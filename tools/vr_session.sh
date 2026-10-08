@@ -13,6 +13,10 @@ mkdir -p "$STATE"
 LOG="$STATE/presenter.log"
 SBS_LOG="$STATE/set_sbs.log"
 
+# The installed socket unit owns the driver link's address; a manual presenter cannot bind it, so stop the units first and bring them back on `stop`.
+units_stop()    { systemctl --user is-active --quiet xreal-linux.socket 2>/dev/null && { systemctl --user stop xreal-linux.service xreal-linux.socket 2>/dev/null; echo "stopped xreal-linux.socket (a manual session needs its address; 'vr_session.sh stop' starts it again)"; }; }
+units_resume()  { systemctl --user is-enabled --quiet xreal-linux.socket 2>/dev/null && systemctl --user start xreal-linux.socket 2>/dev/null; }
+
 stop() {
   for p in vrmonitor vrdashboard vrserver vrcompositor vrwebhelper; do pkill -TERM -x "$p" 2>/dev/null; done
   systemctl --user stop xreal-presenter 2>/dev/null
@@ -31,7 +35,8 @@ launch_presenter() {
 }
 
 case "${1:-status}" in
-  start)   # sets full SBS first (one-shot, only if the glasses are in 2D) and confirms it; the presenter and SteamVR start only once the glasses are in it
+  start)   units_stop
+    # sets full SBS first (one-shot, only if the glasses are in 2D) and confirms it; the presenter and SteamVR start only once the glasses are in it
     stop; sleep 3; rm -f "$LOG"
     "$BIN" --set-sbs-only >"$SBS_LOG" 2>&1
     for _ in $(seq 30); do full_sbs && break; sleep 0.5; done
@@ -45,11 +50,11 @@ case "${1:-status}" in
     sleep 3
     steam steam://run/250820 >/tmp/steamvr_launch.log 2>&1 &
     echo "started; 'vr_session.sh status' in ~30 s" ;;
-  presenter)   # restart only the presenter (SteamVR keeps running and the driver reconnects)
+  presenter)   units_stop   # restart only the presenter (SteamVR keeps running and the driver reconnects)
     systemctl --user stop xreal-presenter 2>/dev/null; systemctl --user reset-failed xreal-presenter 2>/dev/null; rm -f "$LOG"
     launch_presenter
     echo "presenter restarted with: $ARGS" ;;
-  stop) stop; "$BIN" --restore-display 2>&1 | tail -3; echo stopped ;;   # puts the glasses back in the 2D mode they were in before `start`, if it switched them
+  stop) stop; "$BIN" --restore-display 2>&1 | tail -3; units_resume; echo stopped ;;   # puts the glasses back in the 2D mode they were in before `start`, if it switched them
   log) tail -n 40 "$LOG" ;;
   status)
     echo "presenter: $(systemctl --user is-active xreal-presenter)"

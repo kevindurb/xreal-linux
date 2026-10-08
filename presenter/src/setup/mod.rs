@@ -253,6 +253,20 @@ fn register_driver(env: &Env, dialog: &Dialog, dry_run: bool) -> Vec<String> {
     }
 }
 
+/// `KEY=value` lines (systemd EnvironmentFile style: comments with # or ;, optional quotes).
+pub fn parse_env_file(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            if l.is_empty() || l.starts_with('#') || l.starts_with(';') {
+                return None;
+            }
+            let (k, v) = l.split_once('=')?;
+            Some((k.trim().to_string(), v.trim().trim_matches(|c| c == '"' || c == '\'').to_string()))
+        })
+        .collect()
+}
+
 fn status(env: &Env) -> i32 {
     let u = |verb, unit| units::state(verb, unit);
     println!("installed:   {}", env.installed_version().map(|v| v.commit).unwrap_or_else(|| "no".into()));
@@ -262,8 +276,13 @@ fn status(env: &Env) -> i32 {
     println!("service:     {}", u("is-active", units::SERVICE));
     println!("glasses:     {}", match (check::gather_output_summary(), ()) { (Some(s), _) => s, _ => "no connected glasses output found".into() });
     println!("recorded display mode: {}", match crate::glasses::read_record(&env.state_dir()) { Some(crate::glasses::Previous::TwoD) => "was 2D (not restored yet)", Some(crate::glasses::Previous::Sbs) => "was full SBS", None => "none" });
-    println!("reprojection: {} (XREAL_REPROJECT={}, extra args: {})", if std::env::var("XREAL_REPROJECT").ok().as_deref() == Some("0") { "off" } else { "on" }, std::env::var("XREAL_REPROJECT").unwrap_or_else(|_| "unset".into()), std::env::var("XREAL_EXTRA_ARGS").unwrap_or_else(|_| "none".into()));
-    println!("service environment file: {}", { let p = env.config_home.join("xreal-linux/service.env"); if p.is_file() { p.display().to_string() } else { "none".into() } });
+    // The service gets its options from this file (EnvironmentFile in the unit), not from the shell that runs `status`.
+    let file = env.config_home.join("xreal-linux/service.env");
+    let vars = parse_env_file(&std::fs::read_to_string(&file).unwrap_or_default());
+    let get = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    let args = serve_args(get("XREAL_REPROJECT"), get("XREAL_EXTRA_ARGS"));
+    println!("service options: {} ({})", args.join(" "), if file.is_file() { file.display().to_string() } else { format!("defaults; put XREAL_REPROJECT=0 or XREAL_EXTRA_ARGS=... in {}", file.display()) });
+    println!("reprojection: {}", if args.iter().any(|a| a == "--reproject") { "on" } else { "off" });
     println!("last session (journalctl --user -u {}):", units::SERVICE);
     let out = std::process::Command::new("journalctl").args(["--user", "-u", units::SERVICE, "-n", "5", "--no-pager", "-o", "cat"]).output();
     match out {
@@ -344,6 +363,12 @@ mod tests {
         assert_eq!(serve_args(Some("1"), None), ["--service", "--reproject"]);
         assert_eq!(serve_args(Some("0"), None), ["--service"]);
         assert_eq!(serve_args(None, Some("--no-set-sbs  --sim-pose")), ["--service", "--reproject", "--no-set-sbs", "--sim-pose"]);
+    }
+
+    #[test]
+    fn the_service_environment_file_is_parsed_like_systemd_does() {
+        let v = parse_env_file("# comment\nXREAL_REPROJECT=0\nXREAL_EXTRA_ARGS=\"--no-set-sbs --sim-pose\"\n\nbad line\n");
+        assert_eq!(v, [("XREAL_REPROJECT".to_string(), "0".to_string()), ("XREAL_EXTRA_ARGS".to_string(), "--no-set-sbs --sim-pose".to_string())]);
     }
 
     #[test]
