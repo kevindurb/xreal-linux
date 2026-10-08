@@ -651,11 +651,11 @@ The values are per unit and the document includes the serial number, so it is **
 
 ### 13.3 What this was used for, and what is still open
 
-- **Field of view.** From the display intrinsics, assuming the 1080-row full SBS picture sits unscaled in the 1200-row panel (not checked by
-  eye yet), each eye sees about 42.2 degrees horizontally by 24.7 degrees vertically: half-tangents of 0.3857 and 0.2190 after averaging both
+- **Field of view.** From the display intrinsics, assuming the 1080-row full SBS picture sits unscaled in the 1200-row panel (the wearer reported on 2026-10-08 that the
+  world looked right and comfortable with these values; the vertical mapping was not measured), each eye sees about 42.2 degrees horizontally by 24.7 degrees vertically: half-tangents of 0.3857 and 0.2190 after averaging both
   eyes. The driver's old placeholder was 48.5 x 28.4 degrees. The driver's `GetProjectionRaw` and the presenter's reprojection constant now use
   the new values.
-- **IPD.** The display offsets give 64.0 mm, and the driver now reports 64 mm (it was 63 mm).
+- **IPD.** The display offsets give 64.0 mm, and the driver now reports 64 mm (it was 63 mm); the wearer found it comfortable.
 - **6DoF.** The camera's intrinsics and its pose relative to the IMU are given by the glasses. The camera-to-IMU *time offset* is not in the
   file. The config does not say how the camera starts.
 - **Eye frame size (inference, not checked).** The camera stream's payload is 193,856 bytes; 512 x 378 = 193,536 plus 320 header bytes would fit,
