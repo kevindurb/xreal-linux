@@ -2,6 +2,7 @@
 //! and `restore-display` (its ExecStopPost). All for the current user; nothing needs root.
 
 pub mod check;
+pub mod device;
 pub mod dialog;
 pub mod env;
 pub mod install;
@@ -24,11 +25,13 @@ pub enum Dispatch {
 pub const GLASSES_NOTICE: &str = "When SteamVR starts using the glasses they switch to full side-by-side (SBS), and back to the mode they were in when SteamVR stops. \
 Each switch re-plugs the glasses' display for about two seconds, so the desktop may rearrange windows. Nothing is done to the glasses while SteamVR is not running, so they stay usable as a normal monitor.";
 
-const USAGE: &str = "usage: xreal-linux [setup | check | fix | status | uninstall | restore-display | headlook | sbs] [--dry-run] [--yes]
+const USAGE: &str = "usage: xreal-linux [setup | check | fix | status | uninstall | restore-display | headlook | sbs] [--dry-run] [--yes] [--no-enable]
   setup            install for this user (asks first), register the driver, enable the background service, fix SteamVR settings
+  setup --no-enable  place the files and all the user units but enable none of them (the game-mode panel's install: it switches modes itself)
   check            report whether everything is in place (changes nothing)
   fix              set the SteamVR settings the setup needs (asks for each; SteamVR must not be running)
   status           what is installed and what the service did last
+  status --json    the same as structured JSON: the connected device and its controls, the runtime version, the units' state
   uninstall        undo setup
   restore-display  put the glasses back in the 2D mode recorded before a session
   headlook         drive a virtual gamepad or mouse from the glasses' head motion, without SteamVR
@@ -44,6 +47,8 @@ pub fn dispatch(args: &[String]) -> Dispatch {
     };
     let rest: Vec<&str> = args.iter().skip(if args.is_empty() { 0 } else { 1 }).map(String::as_str).collect();
     let (dry_run, yes) = (rest.contains(&"--dry-run"), rest.contains(&"--yes") || rest.contains(&"-y"));
+    let json = rest.contains(&"--json");
+    let no_enable = rest.contains(&"--no-enable");
     match cmd {
         "serve" => return Dispatch::Present(serve_args(std::env::var("XREAL_REPROJECT").ok().as_deref(), std::env::var("XREAL_EXTRA_ARGS").ok().as_deref())),
         "headlook" => return Dispatch::Exit(crate::headlook::command(&rest)),
@@ -78,10 +83,10 @@ pub fn dispatch(args: &[String]) -> Dispatch {
     }
     let dialog = Dialog::new(yes);
     let code = match cmd {
-        "setup" => setup(&env, &dialog, dry_run),
+        "setup" => setup(&env, &dialog, dry_run, no_enable),
         "check" => check(&env, &dialog),
         "fix" => fix(&env, &dialog, dry_run),
-        "status" => status(&env),
+        "status" => status(&env, json),
         "uninstall" => uninstall(&env, &dialog, dry_run),
         _ => unreachable!(),
     };
@@ -143,16 +148,21 @@ fn fix(env: &Env, dialog: &Dialog, dry_run: bool) -> i32 {
     }
 }
 
-fn setup(env: &Env, dialog: &Dialog, dry_run: bool) -> i32 {
+fn setup(env: &Env, dialog: &Dialog, dry_run: bool, no_enable: bool) -> i32 {
     let source = env.appimage.clone().or_else(|| std::env::current_exe().ok()).unwrap_or_default();
     if std::env::var_os("APPDIR").is_some_and(|d| !d.to_string_lossy().contains(".mount_")) {
         println!("note: running without FUSE (extracted to {}); the service will use the same way of starting", std::env::var("APPDIR").unwrap_or_default());
     }
+    let tail = if no_enable {
+        "It places the app, the driver and every user unit, but enables none of them: the game-mode panel switches the mode.".to_string()
+    } else {
+        "Then it asks separately about the background service, the opt-in head-look service and the SteamVR settings.".to_string()
+    };
     let mut intro = vec![
         format!("Install XREAL for SteamVR for your user only (no root):"),
         format!("  - copy the app and the SteamVR driver to {}", env.install_dir().display()),
         "  - register the driver with SteamVR".to_string(),
-        "Then it asks separately about the background service and the SteamVR settings.".to_string(),
+        tail,
     ];
     if let Some((new, old)) = install::update_available(env) {
         intro.insert(1, format!("An older version ({}) is installed; this one ({}) will replace it in place.", old.commit, new.commit));
@@ -168,20 +178,50 @@ fn setup(env: &Env, dialog: &Dialog, dry_run: bool) -> i32 {
     report(dialog, "Files", &r.lines);
     problems.extend(r.problems);
     problems.extend(register_driver(env, dialog, dry_run));
-    // The service.
-    let service_question = format!("Enable the background service?\n\n{GLASSES_NOTICE}");
-    if dry_run {
-        println!("{GLASSES_NOTICE}");
-        match units::install(env, std::env::var_os("APPIMAGE_EXTRACT_AND_RUN").is_some(), true) {
-            Ok(l) | Err(l) => report(dialog, "Service", &l),
-        }
-    } else if dialog.ask(&service_question) {
-        match units::install(env, std::env::var_os("APPIMAGE_EXTRACT_AND_RUN").is_some(), false) {
-            Ok(l) => report(dialog, "Service", &l),
-            Err(p) => problems.extend(p),
+    let extract = std::env::var_os("APPIMAGE_EXTRACT_AND_RUN").is_some();
+    if no_enable {
+        // Provisioning install (the game-mode panel): every unit is placed, none is enabled. The panel's mode switch enables the one
+        // the wearer picks, so a fresh install leaves head mouse and SteamVR both off.
+        match units::provision(env, extract, dry_run) {
+            Ok(l) => report(dialog, "User units (placed, none enabled)", &l),
+            Err(p) => {
+                report(dialog, "User units (placed, none enabled)", &p);
+                problems.extend(p);
+            }
         }
     } else {
-        println!("the service was not enabled; start SteamVR from a checkout with tools/vr_session.sh, or run setup again");
+        // The service.
+        let service_question = format!("Enable the background service?\n\n{GLASSES_NOTICE}");
+        if dry_run {
+            println!("{GLASSES_NOTICE}");
+            match units::install(env, extract, true) {
+                Ok(l) | Err(l) => report(dialog, "Service", &l),
+            }
+        } else if dialog.ask(&service_question) {
+            match units::install(env, extract, false) {
+                Ok(l) => report(dialog, "Service", &l),
+                Err(p) => problems.extend(p),
+            }
+        } else {
+            println!("the service was not enabled; start SteamVR from a checkout with tools/vr_session.sh, or run setup again");
+        }
+        // The opt-in head-look service. Declining writes nothing of it, so an install that does not want head mouse stays clean.
+        let headlook_question = format!(
+            "Also install the head-look service?\n\nIt runs `xreal-presenter headlook --service` as your user so the glasses drive a virtual mouse from head motion with no terminal, and is disabled until you ask for it here (or enable it later from the Decky panel). Its options go in {} (device mouse by default). The glasses still need Follow mode, Stabilizer off and auto sleep off, which this tool cannot set.",
+            env.config_home.join("xreal-linux/headlook.env").display()
+        );
+        if dry_run {
+            match units::install_headlook(env, extract, true) {
+                Ok(l) | Err(l) => report(dialog, "Head-look service", &l),
+            }
+        } else if dialog.ask(&headlook_question) {
+            match units::install_headlook(env, extract, false) {
+                Ok(l) => report(dialog, "Head-look service", &l),
+                Err(p) => problems.extend(p),
+            }
+        } else {
+            println!("the head-look service was not installed; enable head mouse later by running setup again or from the Decky panel");
+        }
     }
     // The SteamVR settings.
     if dry_run || dialog.ask("Check the SteamVR settings now and offer to change the ones the setup needs?\n(SteamVR must not be running; each change is shown and asked about, and a backup is kept.)") {
@@ -271,7 +311,19 @@ pub fn parse_env_file(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn status(env: &Env) -> i32 {
+fn status(env: &Env, json: bool) -> i32 {
+    if json {
+        let facts = device::gather(env);
+        match serde_json::to_string_pretty(&device::render(&facts)) {
+            Ok(text) => println!("{text}"),
+            Err(e) => {
+                eprintln!("cannot render the report: {e}");
+                return 1;
+            }
+        }
+        // A front-end reads the report even with no device; the exit status is how a script learns there is none.
+        return (!device::connected(&facts)) as i32;
+    }
     let u = |verb, unit| units::state(verb, unit);
     println!("installed:   {}", env.installed_version().map(|v| v.commit).unwrap_or_else(|| "no".into()));
     println!("bundle:      {}", env.bundled_version().map(|v| v.commit).unwrap_or_else(|| "none (not running from a release)".into()));
@@ -297,7 +349,7 @@ fn status(env: &Env) -> i32 {
 }
 
 fn uninstall(env: &Env, dialog: &Dialog, dry_run: bool) -> i32 {
-    if !dry_run && !dialog.ask("Uninstall XREAL for SteamVR?\n\nThis stops and removes the background service, puts the glasses back in their recorded mode, unregisters the driver, restores the SteamVR settings this package changed, and deletes the installed files. Records stay in the state directory.") {
+    if !dry_run && !dialog.ask("Uninstall XREAL for SteamVR?\n\nThis stops and removes the background service and, if installed, the head-look service, puts the glasses back in their recorded mode, unregisters the driver, restores the SteamVR settings this package changed, and deletes the installed files. Records stay in the state directory.") {
         println!("nothing was changed");
         return 0;
     }

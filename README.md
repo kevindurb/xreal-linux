@@ -12,8 +12,9 @@ settings, and a second display enabled (the Deck's own screen) so desktop window
 1. Download `xreal-linux-x86_64.AppImage` from the [latest release](https://github.com/kevindurb/xreal-linux/releases/latest) and make it
    executable (`chmod +x`, or *Properties > Permissions* in the file manager).
 2. Run it (double-click, or `./xreal-linux-x86_64.AppImage`). Answer the questions: it installs for your user only (no root), registers the
-   driver with SteamVR, offers to enable a background service, and offers to change four SteamVR settings (each is shown and asked about, and
-   a backup is kept). `--dry-run` shows what it would do without changing anything.
+   driver with SteamVR, offers to enable a background service, offers the opt-in head-look service (head mouse, off unless you say yes), and
+   offers to change four SteamVR settings (each is shown and asked about, and a backup is kept). `--dry-run` shows what it would do without
+   changing anything.
    *If the AppImage does not start because FUSE is missing, run it as `./xreal-linux-x86_64.AppImage --appimage-extract-and-run`.*
 3. On the glasses, set **Follow mode** (not Anchor), **Stabilizer off** and **auto sleep off** in their own menu (double-click the X button,
    then Display, ...). The host can neither read nor set these.
@@ -35,7 +36,19 @@ Afterwards, from the installed copy (`~/.local/share/xreal-linux/xreal-linux.App
 The presenter's log is in the journal: `journalctl --user -u xreal-linux`. Options for the service go in
 `~/.config/xreal-linux/service.env` (`XREAL_REPROJECT=0` turns reprojection off, `XREAL_EXTRA_ARGS="..."` adds presenter flags).
 
-**Not promised:** the Deck's *game mode* (whether the background service runs there is not known yet), Flatpak Steam, and GPUs other than AMD.
+**Head mouse as a service (opt-in).** Answering yes to the head-look question in `setup` writes and enables the user unit
+`xreal-headlook.service`, which runs `xreal-presenter headlook --service` with no terminal (head motion drives a virtual mouse; Enable/Disable
+it as `systemctl --user enable/disable --now xreal-headlook.service`). Its options go in `~/.config/xreal-linux/headlook.env`
+(`XREAL_HEADLOOK_DEVICE=mouse`, `XREAL_HEADLOOK_MODEL=stick`, `XREAL_HEADLOOK_ARGS="--sensitivity 1.5 --range 45"`). `uninstall` stops and
+removes it. The glasses still need Follow mode, Stabilizer off and auto sleep off.
+
+**Game mode (Decky plugin).** A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin, `decky/`, puts the same controls in
+the Quick Access Menu: pick **Off / Head mouse / SteamVR**, see the glasses and each unit's real state, and install or update the runtime from
+the panel. Installing places the files and every user unit but enables none of them, so a fresh install is **Off** until you pick a mode. It is
+a thin front end — it runs `systemctl --user` and the runtime's own CLI as your session user and never touches the glasses' protocol itself.
+See [decky/README.md](decky/README.md). The plugin ships in the same release as the AppImage, verified by a published `SHA256SUMS`.
+
+**Not promised:** Flatpak Steam, and GPUs other than AMD.
 
 ## Status
 
@@ -48,6 +61,7 @@ The rest of this file and `docs/` are the engineering notes: how the pieces work
 | Head tracking, 3DoF (IMU) | Works; the yaw drifts (the magnetometer is not usable) |
 | SteamVR integration | Works: a driver-direct-mode driver plus a presenter that owns the glasses' display |
 | Install | One AppImage with a guided setup, a socket-activated user service, undo |
+| Game mode | A Decky plugin panel (Off / Head mouse / SteamVR, status, runtime install); background service in game mode not yet verified |
 | Eye camera, 6DoF / SLAM | Stream partly decoded; a host-started camera sends only four frames; parked |
 
 ## Goal

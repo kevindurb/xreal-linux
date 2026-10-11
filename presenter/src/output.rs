@@ -28,19 +28,39 @@ pub fn is_glasses(edid: &[u8]) -> bool {
 /// The kernel connector name (`DP-1`) of a connected output whose EDID is the glasses', looked up under `drm_dir` (`/sys/class/drm`).
 /// On a Wayland compositor such as Plasma this is also the output's name.
 pub fn find_glasses_connector(drm_dir: &Path) -> Option<String> {
-    let mut found: Vec<String> = std::fs::read_dir(drm_dir)
-        .ok()?
+    connected_xreal(drm_dir)
+        .into_iter()
+        .find(|(_, product)| *product == GLASSES_PRODUCT)
+        .map(|(connector, _)| connector)
+}
+
+/// A connected output whose EDID manufacturer is XREAL's `MRG`, and its product code, sorted by connector name. This also finds
+/// XREAL models other than the 1S, so the capability report can say a recognized model is unsupported rather than pretend no
+/// device is connected.
+pub fn find_xreal_output(drm_dir: &Path) -> Option<(String, u16)> {
+    connected_xreal(drm_dir).into_iter().next()
+}
+
+/// Every connected output whose EDID manufacturer is `MRG`, with the product code from its EDID.
+fn connected_xreal(drm_dir: &Path) -> Vec<(String, u16)> {
+    let mut found: Vec<(String, u16)> = std::fs::read_dir(drm_dir)
+        .into_iter()
+        .flatten()
         .flatten()
         .filter_map(|e| {
             let dir = e.path();
             let name = e.file_name().to_string_lossy().into_owned();
             let connector = name.strip_prefix("card")?.split_once('-')?.1.to_string();
             let connected = std::fs::read_to_string(dir.join("status")).ok()?.trim() == "connected";
-            (connected && is_glasses(&std::fs::read(dir.join("edid")).ok()?)).then_some(connector)
+            if !connected {
+                return None;
+            }
+            let (manufacturer, product) = parse_edid(&std::fs::read(dir.join("edid")).ok()?)?;
+            (manufacturer == GLASSES_MANUFACTURER).then_some((connector, product))
         })
         .collect();
     found.sort();
-    found.into_iter().next()
+    found
 }
 
 #[cfg(test)]
@@ -83,5 +103,19 @@ mod tests {
         assert_eq!(find_glasses_connector(&dir), Some("DP-3".to_string()), "a disconnected output with the glasses' EDID does not count");
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(find_glasses_connector(&dir), None);
+    }
+
+    #[test]
+    fn another_xreal_model_is_found_but_is_not_the_supported_product() {
+        let dir = std::env::temp_dir().join(format!("xreal-drm-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut other = GLASSES;
+        other[10] = 0x03; // product 0x4103: still manufacturer MRG
+        std::fs::create_dir_all(dir.join("card1-DP-1")).unwrap();
+        std::fs::write(dir.join("card1-DP-1/status"), "connected\n").unwrap();
+        std::fs::write(dir.join("card1-DP-1/edid"), other).unwrap();
+        assert_eq!(find_xreal_output(&dir), Some(("DP-1".to_string(), 0x4103)), "a recognized XREAL model is reported with its product");
+        assert_eq!(find_glasses_connector(&dir), None, "but it is not the supported 1S product");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

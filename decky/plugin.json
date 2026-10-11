@@ -1,0 +1,11 @@
+{
+  "name": "XREAL",
+  "author": "kevindurb",
+  "flags": ["_root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["xreal", "steamvr", "vr", "glasses", "decky"],
+    "description": "Control XREAL glasses from game mode: head mouse or SteamVR, with a status readout and runtime install/update. Drives the installed xreal-linux runtime as your session user.",
+    "image": "https://opengraph.githubassets.com/1/kevindurb/xreal-linux"
+  }
+}

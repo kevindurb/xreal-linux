@@ -20,6 +20,41 @@ Notes for the real thing, from ALVR's Linux driver (MIT): SteamVR's swap texture
 with Vulkan's *opaque-fd* external memory type using the same image parameters, on the same GPU. That is why this has to
 be a Vulkan program and not a plain Wayland dma-buf hand-off.
 
+## Device and capability report (`status --json`)
+
+`xreal-presenter status --json` prints the installed state as a single JSON object, so a program (the Decky plugin, a script) can
+read the connected device and its controls without screen-scraping the human `status` text. The human `status` output is unchanged.
+
+    {
+      "device": {
+        "connected": true,
+        "identified_by": "edid",
+        "connector": "DP-1",
+        "model": "1s",
+        "name": "XREAL 1S",
+        "supported": true,
+        "controls": ["head_mouse", "steamvr"]
+      },
+      "runtime": { "installed": true, "version": "abc1234", "bundled": "abc1234" },
+      "units": {
+        "xreal-linux.socket":  { "enabled": "enabled",  "active": "active" },
+        "xreal-linux.service": { "enabled": "",         "active": "inactive" },
+        "xreal-headlook.service": { "enabled": "disabled", "active": "inactive" }
+      }
+    }
+
+- `device.identified_by` is `"edid"` for a known model, `"edid:unsupported"` for an XREAL display this build has no profile for
+  (then `model`, `name` are `null` and `controls` is empty — no invented controls), and `null` when no device is connected.
+- `device.controls` names the modes the model supports; the 1S supports `head_mouse` and `steamvr`.
+- With no device connected the report still prints (with `"connected": false`) and the command exits **non-zero**, so a script can
+  tell by exit status.
+- Producing the report reads only — the EDID, the `VERSION` files and `systemctl --user` state — and sends nothing to the glasses,
+  so the display mode is unchanged.
+
+**Capability table.** The per-model profiles live in `src/setup/device.rs` (`PROFILES`), keyed by the product code the model reports
+in its EDID (with manufacturer `MRG`). The 1S (`0x4102`) is the only entry; adding a model is a new `Profile` with its
+`controls`, and the front-end renders itself from `controls` rather than hard-coding modes.
+
 ## What it does with SteamVR
 
 The driver sends each swap-texture set's fds over the abstract socket `@xreal-presenter-<uid>` and a small message per
@@ -68,6 +103,26 @@ Two device kinds, both named recognisably and removed when it exits:
 `rate` follows the head's angular velocity (drift-tolerant; a still head emits nothing above the deadzone); `stick` and `absolute` follow the head's angle from a neutral, so look straight ahead and recenter. **Recenter** happens on start and whenever the process gets `SIGUSR1` (`kill -USR1 <pid>`); `--no-recenter` keeps the world frame instead. The service prints a status line (device, model, IMU, last recenter) on start, on a change and every ten seconds, and stops emitting head motion when the IMU is unavailable.
 
 The glasses must be in Follow mode, Stabilizer off and auto sleep off; the host cannot read or set those.
+
+### As an opt-in user service
+
+`setup` offers a user unit, `xreal-headlook.service`, so head mouse can be turned on and off as a service instead of a foreground command.
+It runs as your user (no root, the same `uaccess` ACL on `/dev/uinput`), with no terminal open, and `headlook` already reconnects on its own
+when the IMU drops, so `Restart=on-failure` is enough. It is written only if you opt in (and is disabled until then); the game-mode panel
+instead places it disabled and lets its mode switch turn it on.
+
+    systemctl --user enable  --now xreal-headlook.service   # turn head mouse on
+    systemctl --user disable --now xreal-headlook.service   # turn it off (also removes the virtual device)
+    journalctl --user -u xreal-headlook                     # its log
+
+Its options come from `~/.config/xreal-linux/headlook.env` (the unit's `EnvironmentFile`), read only in `--service` mode:
+
+    XREAL_HEADLOOK_DEVICE=mouse                         # gamepad|mouse; mouse is the default
+    XREAL_HEADLOOK_MODEL=stick                          # rate|stick|absolute
+    XREAL_HEADLOOK_ARGS=--sensitivity 1.5 --range 45    # any other headlook flags
+
+The unit's `ExecStart` is `xreal-presenter headlook --service`; a command-line flag still overrides the file. `uninstall` stops and removes
+the unit, and `check` reports whether it is enabled.
 
 ## Flat stereo (`sbs`)
 

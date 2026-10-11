@@ -718,3 +718,48 @@ With the glasses powered and their live IMU streaming (`169.254.1.1:52998`), the
 **Measured.** First window: **p50 0.5 ms, p95 1.0 ms over 1960 samples** (the consumer loop at ~5 ms / 200 Hz). The process sat in `hrtimer_nanosleep` (its own sleep) and the IMU thread in `wait_woken` (the socket read), so neither was blocked.
 
 **Scope.** This is the host-arrival to device-event leg only; it does not include the glasses-to-host network leg or the game's own handling. Well inside the test plan's `&lt; ~10 ms` device-side p95 target.
+
+## Structured report, on the Deck (2026-10-11, `add-decky-xreal-control` task 1.2)
+
+`xreal-presenter status --json` run on the Deck (binary built on `dev`, Fedora 44 / glibc 2.43 like the Deck's Bazzite 44, so it runs as-is) with the 1S connected (EDID `36 47 02 41` = MRG 0x4102, connector DP-1) named the device and exited 0:
+
+```json
+{"device":{"connected":true,"connector":"DP-1","controls":["head_mouse","steamvr"],"identified_by":"edid","model":"1s","name":"XREAL 1S","supported":true},
+ "runtime":{"bundled":null,"installed":false,"version":null},
+ "units":{"xreal-headlook.service":{"active":"inactive","enabled":"not-found"}, ...}}
+```
+
+**Read-only.** With `tools/watch_control.py` running, three `status --json` runs produced **no new connection** to the control port (52999): the only `tcp52999 connected` line is the watcher's own, and the one DATA record is the glasses' own periodic event (msg id `0x278a` = 10122). The connector's `status`, EDID md5 and mode list before and after were byte-identical (`connected | 0a6d3728… | 1920x1200 ×3 1920x1080 ×5`), so producing the report changes no display mode. The `units` states came from the real `systemctl --user` (`not-found`/`inactive` — the runtime was not installed). With no device the command still prints `"connected": false` and exits 1 (checked locally).
+
+## Head-look user service, on the Deck (2026-10-11, `add-decky-xreal-control` task 2.4, partial)
+
+The unit text `units::headlook_unit` produces (ExecStart `/tmp/xreal-presenter headlook --service`, `EnvironmentFile=-%E/xreal-linux/headlook.env`, `Restart=on-failure`) was written by hand to `~/.config/systemd/user/xreal-headlook.service` (the real user manager's directory, because `systemctl --user` only sees units there) with the binary at `/tmp`, and driven through the user manager over SSH. No SteamVR and no installed runtime were involved; the unit and env file were removed afterwards.
+
+| Step | Result |
+|---|---|
+| baseline | only the glasses' HID: `Name="XREAL XREAL 1S"`, no `XREAL Head-look *` device |
+| `systemctl --user enable --now xreal-headlook.service` | `is-enabled=enabled`, `is-active=active` (no terminal, no `WAYLAND_DISPLAY`); `Name="XREAL Head-look Mouse"` appeared |
+| write `~/.config/xreal-linux/headlook.env` = `XREAL_HEADLOOK_DEVICE=gamepad`, restart | still active; device now `Name="XREAL Head-look Gamepad"` — the environment file is read in `--service` mode |
+| `systemctl --user disable --now xreal-headlook.service` | `is-active=inactive`, `is-enabled=disabled`; the `XREAL Head-look *` device is gone |
+
+**Not yet done (needs the user's go-ahead):** that `uninstall` removes a unit that `setup` wrote, and that a reboot with the unit enabled leaves it enabled and reconnecting the IMU. Both need a full runtime install (`setup`/`uninstall`) and a reboot.
+
+## Session-user backend helper, on the Deck (2026-10-11, `add-decky-xreal-control` task 3.2)
+
+`decky/main.py`'s helper was run on the Deck both as the plain user and under `sudo` (euid 0). As root it builds `setpriv --reuid=1000 --regid=1000 --init-groups -- systemctl --user is-active xreal-headlook.service`, and the method still returns the unit's real state (`inactive`, `not-found`) — i.e. it reaches the session manager after dropping privilege. As the plain user it adds no prefix. `detect_wayland(1000)` returned `None` because `/run/user/1000` currently has no `wayland-*` socket (no graphical session); the helper leaves `WAYLAND_DISPLAY` unset then.
+
+## Panel install provisions but does not enable, locally (2026-10-11, `add-decky-xreal-control`)
+
+The panel's install used to run `setup --yes`, which *accepts* the opt-in questions and therefore enabled the background service and head mouse at install time. The user asked for the opposite: install should put everything in place and leave the choice to the plugin's mode switch. `setup` gained `--no-enable`, and the panel now runs `setup --yes --no-enable`.
+
+`setup --no-enable` places the app, the driver and **all three** user units (`xreal-linux.socket`, `xreal-linux.service`, `xreal-headlook.service`) and runs only `systemctl --user daemon-reload`; it never enables a unit, and it skips the service/head-look questions. The panel's `set_mode` then enables exactly the one the wearer picks. A `setup --dry-run --no-enable` on `dev` shows:
+
+```
+User units (placed, none enabled)
+  would write …/xreal-linux.socket
+  would write …/xreal-linux.service
+  would write …/xreal-headlook.service
+  would run systemctl --user daemon-reload (nothing enabled)
+```
+
+The interactive `setup` (no flag) is unchanged: it still asks and enables on acceptance. `check` now calls an installed-but-disabled `xreal-linux.socket` informational (it used to say "not installed"), so a provisioned machine reports its units "in place" without a spurious warning.

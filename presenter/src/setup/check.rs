@@ -45,6 +45,8 @@ pub struct UnitFacts {
     pub socket_enabled: String,
     pub socket_active: String,
     pub service_active: String,
+    pub headlook_enabled: String,
+    pub headlook_active: String,
     /// Whether the user manager's environment has WAYLAND_DISPLAY; None if it could not be asked.
     pub wayland_in_manager: Option<bool>,
 }
@@ -147,6 +149,9 @@ pub fn evaluate(f: &Facts) -> Vec<Line> {
                 out.push(line(p, Ok, "xreal-linux.socket is enabled and listening; the presenter starts when SteamVR does"));
             } else if u.socket_enabled == "enabled" || u.socket_active == "active" {
                 out.push(line(p, Warn, format!("xreal-linux.socket is {} / {}; run setup to repair it", u.socket_enabled, u.socket_active)));
+            } else if u.socket_enabled == "disabled" {
+                // Provisioned (for example by the Decky panel's install) but not enabled: that is a choice, not a fault.
+                out.push(line(p, Info, "xreal-linux.socket is installed but not enabled (the Decky panel, or `systemctl --user enable --now xreal-linux.socket`, turns it on)"));
             } else {
                 out.push(line(p, Warn, "xreal-linux.socket is not installed (run setup, or use tools/vr_session.sh from a checkout)"));
             }
@@ -154,6 +159,14 @@ pub fn evaluate(f: &Facts) -> Vec<Line> {
                 Some(true) => out.push(line(p, Ok, "WAYLAND_DISPLAY is in the user manager's environment")),
                 Some(false) => out.push(line(p, Fail, "WAYLAND_DISPLAY is not in the user manager's environment, so the service cannot open a window: run `systemctl --user import-environment WAYLAND_DISPLAY` or log in again")),
                 None => {}
+            }
+            // The head-look service is opt-in, so its absence is not a problem; enable it from setup or the Decky panel.
+            if u.headlook_enabled == "enabled" && u.headlook_active == "active" {
+                out.push(line(p, Ok, "xreal-headlook.service is enabled and active (head mouse)"));
+            } else if u.headlook_enabled == "enabled" || u.headlook_active == "active" {
+                out.push(line(p, Warn, format!("xreal-headlook.service is {} / {}; run setup to repair it", u.headlook_enabled, u.headlook_active)));
+            } else {
+                out.push(line(p, Info, "xreal-headlook.service is not enabled (head mouse is opt-in; enable it from setup or the Decky panel)"));
             }
         }
     }
@@ -325,6 +338,8 @@ pub fn gather(env: &Env) -> Facts {
             socket_enabled: u("is-enabled", units::SOCKET),
             socket_active: u("is-active", units::SOCKET),
             service_active: u("is-active", units::SERVICE),
+            headlook_enabled: u("is-enabled", units::HEADLOOK),
+            headlook_active: u("is-active", units::HEADLOOK),
             wayland_in_manager: manager_env.map(|t| t.lines().any(|l| l.starts_with("WAYLAND_DISPLAY="))),
         }),
         installed_version: env.installed_version(),
@@ -367,7 +382,7 @@ mod tests {
             driver_installed: true,
             driver_bundled: true,
             settings: Some(json!({"steamvr": {"forcedDriver": "xreal", "enableHomeApp": false}, "power": {"turnOffScreensTimeout": 86400, "pauseCompositorOnStandby": false}})),
-            units: Some(UnitFacts { socket_enabled: "enabled".into(), socket_active: "active".into(), service_active: "inactive".into(), wayland_in_manager: Some(true) }),
+            units: Some(UnitFacts { socket_enabled: "enabled".into(), socket_active: "active".into(), service_active: "inactive".into(), headlook_enabled: "disabled".into(), headlook_active: "inactive".into(), wayland_in_manager: Some(true) }),
             installed_version: Version::parse("commit a\nbuilt 1\n"),
             bundle_version: Version::parse("commit a\nbuilt 1\n"),
             pending: None,
@@ -433,6 +448,28 @@ mod tests {
         assert!(levels(&f).contains(&Level::Fail));
         f.units = Some(UnitFacts::default());
         assert!(evaluate(&f).iter().any(|l| l.text.contains("not installed")));
+    }
+
+    #[test]
+    fn the_opt_in_headlook_unit_is_reported_without_failing_when_absent() {
+        let mut f = good();
+        assert!(evaluate(&f).iter().any(|l| l.level == Level::Info && l.text.contains("xreal-headlook.service")), "absent head-look is informational");
+        assert!(!failed(&evaluate(&f)), "an opted-out head-look service is not a failure");
+        f.units.as_mut().unwrap().headlook_enabled = "enabled".into();
+        f.units.as_mut().unwrap().headlook_active = "active".into();
+        assert!(evaluate(&f).iter().any(|l| l.level == Level::Ok && l.text.contains("head mouse")));
+        f.units.as_mut().unwrap().headlook_active = "failed".into();
+        assert!(evaluate(&f).iter().any(|l| l.level == Level::Warn && l.text.contains("xreal-headlook.service")));
+    }
+
+    #[test]
+    fn a_provisioned_but_disabled_socket_is_informational_not_a_failure() {
+        let mut f = good();
+        f.units.as_mut().unwrap().socket_enabled = "disabled".into();
+        f.units.as_mut().unwrap().socket_active = "inactive".into();
+        let lines = evaluate(&f);
+        assert!(lines.iter().any(|l| l.level == Level::Info && l.text.contains("installed but not enabled")), "{lines:#?}");
+        assert!(!failed(&lines), "the panel's install leaves the socket placed but off; that is not a failure");
     }
 
     #[test]

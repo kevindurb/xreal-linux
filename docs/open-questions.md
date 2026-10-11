@@ -25,6 +25,18 @@
 - The meaning of the SDK enum values (pixel format, resolution, exposure type, space/scene mode) and the request header
   fields beyond `msg_id` and length.
 
+## Game mode and the head-look service (change `add-decky-xreal-control`)
+
+- Whether the **Decky panel renders in game mode** and whether its run-as-session-user helper reaches the user manager there.
+  The helper was exercised by hand over SSH against the Deck's real user manager; the panel itself has not been opened.
+- Whether the **opt-in head-look service** survives a reboot enabled and reconnects the IMU on its own, and whether the
+  virtual input device appears/disappears cleanly on enable/disable/uninstall. Code and unit text are in; the on-Deck run is pending.
+- Whether **install/update from the panel** works end to end. It depends on a release tag that carries
+  `xreal-linux-x86_64.AppImage` and a `SHA256SUMS`; that is produced by the new release workflow, which has not run yet.
+  The install now runs `setup --yes --no-enable` (all units placed, none enabled), verified locally with a dry run.
+- Whether the **selected mode persists** across a reboot (the panel reads unit enabled/active; persistence is the units' own behaviour).
+- The **guard** against switching away from SteamVR during a live session is implemented but not exercised on the Deck.
+
 ## Suggested order
 
 1. Run an existing 3DoF stack against the 1S on the Deck (patch the USB ID if needed).

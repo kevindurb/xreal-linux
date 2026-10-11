@@ -365,6 +365,36 @@ pub struct Options {
     pub recenter_on_start: bool,
     pub capture: Option<std::path::PathBuf>,
     pub replay: Option<std::path::PathBuf>,
+    /// `--service`: the unit's mode, which also reads `headlook.env` (the systemd `EnvironmentFile`).
+    pub service: bool,
+}
+
+/// The arguments the `xreal-headlook.service` unit supplies through `headlook.env` (systemd injects the file into the environment).
+/// Device defaults to `mouse` and model to `stick` in `parse_args`, so only overrides appear here. A foreground run ignores the file.
+pub fn env_service_args(get: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let clean = |s: String| s.trim().to_string();
+    let mut a = vec![];
+    if let Some(v) = get("XREAL_HEADLOOK_DEVICE").map(clean).filter(|s| !s.is_empty()) {
+        a.push("--device".to_string());
+        a.push(v);
+    }
+    if let Some(v) = get("XREAL_HEADLOOK_MODEL").map(clean).filter(|s| !s.is_empty()) {
+        a.push("--model".to_string());
+        a.push(v);
+    }
+    // Anything else (the tuning knobs) as a free string, like the service's XREAL_EXTRA_ARGS.
+    if let Some(extra) = get("XREAL_HEADLOOK_ARGS") {
+        a.extend(extra.split_whitespace().map(str::to_string));
+    }
+    a
+}
+
+/// Merge the environment file's arguments (when running as the service) with the command line, so a command-line flag overrides the
+/// file. `--service` itself is kept so `parse_args` records it.
+pub fn service_args(service: bool, args: &[&str], get: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let mut merged = if service { env_service_args(get) } else { vec![] };
+    merged.extend(args.iter().map(|s| s.to_string()));
+    merged
 }
 
 fn num(s: &str, flag: &str) -> Result<f64, String> {
@@ -379,6 +409,7 @@ pub fn parse_args(args: &[&str]) -> Result<Options, String> {
     let mut recenter_on_start = true;
     let mut capture = None;
     let mut replay = None;
+    let mut service = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i];
@@ -408,12 +439,13 @@ pub fn parse_args(args: &[&str]) -> Result<Options, String> {
             "--invert-x" => { tuning.invert_x = true; i += 1; }
             "--invert-y" => { tuning.invert_y = true; i += 1; }
             "--no-recenter" => { recenter_on_start = false; i += 1; }
+            "--service" => { service = true; i += 1; }
             "--capture" => { capture = Some(std::path::PathBuf::from(val(i)?)); i += 2; }
             "--replay" => { replay = Some(std::path::PathBuf::from(val(i)?)); i += 2; }
             other => return Err(format!("unknown option '{other}'")),
         }
     }
-    Ok(Options { tuning, device, recenter_on_start, capture, replay })
+    Ok(Options { tuning, device, recenter_on_start, capture, replay, service })
 }
 
 /// One event to write to the device.
@@ -538,7 +570,8 @@ pub fn status_line(kind: crate::uinput::DeviceKind, model: Model, imu: bool, rec
 
 const USAGE: &str = "usage: xreal-presenter headlook [--model rate|stick|absolute] [--device gamepad|mouse] \
 [--deadzone DEG] [--deadzone-rate DPS] [--sensitivity X] [--curve N] [--range DEG] [--rate-full DPS] \
-[--mouse-gain COUNTS_PER_DEG] [--invert-x] [--invert-y] [--no-recenter] [--capture FILE] [--replay FILE]";
+[--mouse-gain COUNTS_PER_DEG] [--invert-x] [--invert-y] [--no-recenter] [--capture FILE] [--replay FILE] [--service]
+  --service      the unit's mode: read XREAL_HEADLOOK_DEVICE / XREAL_HEADLOOK_MODEL / XREAL_HEADLOOK_ARGS from the environment (headlook.env)";
 
 static RECENTER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -546,9 +579,13 @@ extern "C" fn on_sigusr1(_sig: libc::c_int) {
     RECENTER.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The `headlook` subcommand. Returns the process exit code.
+/// The `headlook` subcommand. Returns the process exit code. In `--service` mode the options in `headlook.env` are applied first, so
+/// the unit can be configured without editing the unit file, and a command-line flag still wins.
 pub fn command(args: &[&str]) -> i32 {
-    let opts = match parse_args(args) {
+    let service = args.iter().any(|a| *a == "--service");
+    let merged = service_args(service, args, |k| std::env::var(k).ok());
+    let refs: Vec<&str> = merged.iter().map(String::as_str).collect();
+    let opts = match parse_args(&refs) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");
@@ -940,6 +977,42 @@ mod tests {
         assert!(!o.recenter_on_start);
         assert_eq!(o.capture.unwrap().to_str().unwrap(), "captures/imu_yaw.bin");
         assert_eq!(o.replay.unwrap().to_str().unwrap(), "captures/imu_move.bin");
+    }
+
+    #[test]
+    fn the_service_reads_headlook_env_and_a_cli_flag_overrides_it() {
+        let get = |k: &str| match k {
+            "XREAL_HEADLOOK_DEVICE" => Some("gamepad".to_string()),
+            "XREAL_HEADLOOK_MODEL" => Some("rate".to_string()),
+            "XREAL_HEADLOOK_ARGS" => Some("--sensitivity 1.5  --range 45".to_string()),
+            _ => None,
+        };
+        let merged = service_args(true, &["--service"], get);
+        let refs: Vec<&str> = merged.iter().map(String::as_str).collect();
+        let o = parse_args(&refs).unwrap();
+        assert!(o.service);
+        assert_eq!(o.device, DeviceKind::Gamepad);
+        assert_eq!(o.tuning.model, Model::Rate);
+        assert_eq!(o.tuning.sensitivity, 1.5);
+        assert_eq!(o.tuning.range_deg, 45.0);
+
+        // A command-line flag is applied after the file, so it wins.
+        let merged = service_args(true, &["--service", "--device", "mouse", "--sensitivity", "2"], get);
+        let refs: Vec<&str> = merged.iter().map(String::as_str).collect();
+        let o = parse_args(&refs).unwrap();
+        assert_eq!(o.device, DeviceKind::Mouse);
+        assert_eq!(o.tuning.sensitivity, 2.0);
+
+        // The unit's ExecStart flag parses on its own (no environment file present).
+        assert!(parse_args(&["--service"]).unwrap().service);
+    }
+
+    #[test]
+    fn a_foreground_run_ignores_the_environment_file() {
+        let get = |k: &str| (k == "XREAL_HEADLOOK_DEVICE").then(|| "gamepad".to_string());
+        assert!(service_args(false, &[], get).is_empty(), "without --service the file is not read");
+        assert!(env_service_args(|_| None).is_empty());
+        assert!(env_service_args(|k| (k == "XREAL_HEADLOOK_DEVICE").then(|| "  ".to_string())).is_empty(), "blank values leave the defaults");
     }
 
     #[test]
