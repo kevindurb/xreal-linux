@@ -27,15 +27,24 @@
 
 ## Game mode and the head-look service (change `add-decky-xreal-control`)
 
-- Whether the **Decky panel renders in game mode** and whether its run-as-session-user helper reaches the user manager there.
-  The helper was exercised by hand over SSH against the Deck's real user manager; the panel itself has not been opened.
-- Whether the **opt-in head-look service** survives a reboot enabled and reconnects the IMU on its own, and whether the
-  virtual input device appears/disappears cleanly on enable/disable/uninstall. Code and unit text are in; the on-Deck run is pending.
-- Whether **install/update from the panel** works end to end. It depends on a release tag that carries
-  `xreal-linux-x86_64.AppImage` and a `SHA256SUMS`; that is produced by the new release workflow, which has not run yet.
-  The install now runs `setup --yes --no-enable` (all units placed, none enabled), verified locally with a dry run.
-- Whether the **selected mode persists** across a reboot (the panel reads unit enabled/active; persistence is the units' own behaviour).
-- The **guard** against switching away from SteamVR during a live session is implemented but not exercised on the Deck.
+Verified on the Deck on 2026-10-11 (see [findings.md](findings.md)): the panel renders in game mode and its run-as-session-user
+helper reaches the user manager; install from the panel and all three mode switches work end to end; the opt-in head-look
+service survives a reboot and reconnects the IMU; `uninstall` removes the units it wrote; and a status read leaves the
+glasses' display mode unchanged.
+
+Still open:
+
+- The **guard** against switching away from SteamVR during a live session is implemented and unit-tested but not exercised
+  in the game-mode UI; SteamVR is a stub on this Deck, so a live session has to be simulated.
+- Whether the **mode chosen from the panel persists** across a reboot. The units' enabled state is the persistence and that
+  was proven for the head-look unit (task 2.4), but a mode chosen in the panel has not itself been reboot-tested.
+- The **update path** from an older installed runtime (the panel's "Update runtime"): installing onto a machine with no
+  runtime is verified; replacing an older runtime in place and seeing the reported version change is not.
+- The **published plugin bundle** `xreal-control.zip` on tag `v0.1.0` predates the three plugin fixes in `decky/main.py`
+  (the runtime AppImage is unaffected). Shipping the fixes means a new tag whose release carries both the AppImage and the
+  plugin bundle — the plugin installs the runtime from its own tag, so a plugin-only re-cut would not do.
+- Whether **Decky's frozen loader keeps injecting `LD_LIBRARY_PATH`** into the plugin's environment. `session_env()` scrubs
+  it defensively (and restores `LD_LIBRARY_PATH_ORIG` when present); a future loader that bundles cleanly would need no change.
 
 ## Suggested order
 

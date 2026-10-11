@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,22 @@ class SessionEnv(unittest.TestCase):
         env = main.session_env(1000, "/home/deck", "deck", "")
         self.assertNotIn("WAYLAND_DISPLAY", env)
 
+    def test_a_frozen_backends_library_path_does_not_reach_children(self):
+        env = main.session_env(1000, "/home/deck", "deck", "", base={
+            "LD_LIBRARY_PATH": "/tmp/_MEI123",
+            "LD_PRELOAD": "/tmp/_MEI123/libx.so",
+        })
+        self.assertNotIn("LD_LIBRARY_PATH", env, "PyInstaller's path would make systemctl load the wrong libcrypto")
+        self.assertNotIn("LD_PRELOAD", env)
+
+    def test_the_pre_loader_library_path_is_restored_when_the_loader_saved_one(self):
+        env = main.session_env(1000, "/home/deck", "deck", "", base={
+            "LD_LIBRARY_PATH": "/tmp/_MEI123",
+            "LD_LIBRARY_PATH_ORIG": "/opt/mine/lib",
+        })
+        self.assertEqual(env["LD_LIBRARY_PATH"], "/opt/mine/lib", "a path that was there before the loader is kept")
+        self.assertNotIn("LD_LIBRARY_PATH_ORIG", env)
+
 
 class AsUserArgv(unittest.TestCase):
     def test_drops_privilege_only_when_root(self):
@@ -70,6 +87,12 @@ class ReportHelpers(unittest.TestCase):
                          {"commit": "abc123", "built": 1700000000})
         self.assertIsNone(main.parse_version(""))
         self.assertIsNone(main.parse_version("built 1700000000\n"), "a commit is required")
+
+    def test_first_problem_finds_the_reason_setup_reported(self):
+        output = "Files\n  placed /x\nProblems:\n  - SteamVR not installed: run setup again\nResult: 1 ok, 1 failure\n"
+        self.assertEqual(main.first_problem(output), "- SteamVR not installed: run setup again")
+        self.assertEqual(main.first_problem("Problems:\n"), "setup reported problems")
+        self.assertEqual(main.first_problem("all good"), "", "no problems section means no reason to give")
 
 
 class ReleaseHelpers(unittest.TestCase):
@@ -163,6 +186,28 @@ class SetMode(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(seen, [])
 
+    def test_a_failed_unit_action_is_reported_with_its_reason(self):
+        p = fake_plugin()
+
+        async def systemctl(*args):
+            if args[2] == main.SOCKET:
+                return subprocess.CompletedProcess(["systemctl", *args], 1, "", "Failed to enable unit: No such file or directory")
+            return subprocess.CompletedProcess(["systemctl", *args], 0, "", "")
+
+        async def running():
+            return False
+
+        async def state():
+            return {"user": "deck", "units": {}, "runtime": {}, "report": None, "expected_version": p.version}
+
+        p._systemctl = systemctl
+        p._steamvr_running = running
+        p.get_state = state
+        result = asyncio.run(p.set_mode("steamvr"))
+        self.assertFalse(result["ok"])
+        self.assertIn(main.SOCKET, result["error"], "the panel is told which action failed")
+        self.assertIn("No such file", result["error"], "and why, not just 'The action failed.'")
+
 
 class GetState(unittest.TestCase):
     def _state(self, installed, report):
@@ -229,7 +274,7 @@ class Install(unittest.TestCase):
     def test_a_tag_without_a_checksum_installs_nothing(self):
         p = fake_plugin()
 
-        def boom(url, timeout=0):
+        def boom(url, timeout=0, **kwargs):
             raise OSError("404 Not Found")
 
         out = self._with_urlopen(boom, lambda: p._install_sync("v9.9.9"))
@@ -250,7 +295,7 @@ class Install(unittest.TestCase):
             def __exit__(self, *exc):
                 self.close()
 
-        def handler(url, timeout=0):
+        def handler(url, timeout=0, **kwargs):
             return Response(sums.encode() if url.endswith(main.CHECKSUM_ASSET) else payload)
 
         def run(argv, timeout=30):
@@ -267,6 +312,120 @@ class Install(unittest.TestCase):
                              "the panel's install provisions the units but enables none, so head mouse waits for the switch")
             self.assertTrue(os.path.isfile(dest))
 
+    def test_the_backend_hands_the_runtime_to_the_session_user(self):
+        p = fake_plugin()
+        payload = b"a verified appimage"
+        digest = hashlib.sha256(payload).hexdigest()
+        sums = f"{digest}  {main.APPIMAGE_ASSET}\n"
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+
+        def handler(url, timeout=0, **kwargs):
+            return Response(sums.encode() if url.endswith(main.CHECKSUM_ASSET) else payload)
+
+        chowns = []
+        real_geteuid, real_chown = os.geteuid, os.chown
+        os.geteuid = lambda: 0  # the backend runs as root with the `_root` flag
+        os.chown = lambda path, uid, gid: chowns.append((path, uid, gid))
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                p.home = home
+                p._run_user_sync = lambda argv, timeout=30: subprocess.CompletedProcess(argv, 0, "ok", "")
+                out = self._with_urlopen(handler, lambda: p._install_sync("v0.1.0"))
+        finally:
+            os.geteuid, os.chown = real_geteuid, real_chown
+        self.assertTrue(out["ok"], out)
+        owned = {os.path.basename(path.rstrip("/")): (uid, gid) for path, uid, gid in chowns}
+        self.assertEqual(owned.get("xreal-linux"), (1000, 1000), "the runtime directory belongs to the session user")
+        self.assertEqual(owned.get("xreal-linux.AppImage"), (1000, 1000), "so setup can write the driver beside it")
+
+    def test_a_setup_that_reports_a_problem_is_not_ok_but_says_why(self):
+        p = fake_plugin()
+        payload = b"a verified appimage"
+        digest = hashlib.sha256(payload).hexdigest()
+        sums = f"{digest}  {main.APPIMAGE_ASSET}\n"
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+
+        def handler(url, timeout=0, **kwargs):
+            return Response(sums.encode() if url.endswith(main.CHECKSUM_ASSET) else payload)
+
+        def run(argv, timeout=30):
+            out = "Files\n  placed /x\ndriver registration failed\nProblems:\n  - SteamVR is not installed\nResult: 1 ok, 1 failure\n"
+            return subprocess.CompletedProcess(argv, 1, out, "")
+
+        with tempfile.TemporaryDirectory() as home:
+            p.home = home
+            p._run_user_sync = run
+            out = self._with_urlopen(handler, lambda: p._install_sync("v0.1.0"))
+            self.assertFalse(out["ok"], "setup's non-zero exit means the install finished with a problem")
+            self.assertEqual(out["kind"], "installed")
+            self.assertIn("SteamVR is not installed", out["error"], "the panel is told the reason, not 'unknown error'")
+
+    def test_a_flaky_download_is_retried_until_the_checksum_matches(self):
+        p = fake_plugin()
+        payload = b"a verified appimage"
+        digest = hashlib.sha256(payload).hexdigest()
+        sums = f"{digest}  {main.APPIMAGE_ASSET}\n"
+        calls = {"app": 0}
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+
+        def handler(url, timeout=0, **kwargs):
+            if url.endswith(main.CHECKSUM_ASSET):
+                return Response(sums.encode())
+            calls["app"] += 1
+            return Response(b"a truncated transfer" if calls["app"] < 2 else payload)
+
+        with tempfile.TemporaryDirectory() as home:
+            p.home = home
+            p._run_user_sync = lambda argv, timeout=30: subprocess.CompletedProcess(argv, 0, "ok", "")
+            out = self._with_urlopen(handler, lambda: p._install_sync("v0.1.0"))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(calls["app"], 2, "the second, complete transfer is the one that is used")
+
+    def test_every_fetch_uses_an_explicit_ca_context(self):
+        p = fake_plugin()
+        payload = b"a verified appimage"
+        digest = hashlib.sha256(payload).hexdigest()
+        sums = f"{digest}  {main.APPIMAGE_ASSET}\n"
+        seen = []
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+
+        def handler(url, timeout=0, **kwargs):
+            seen.append(kwargs.get("context"))
+            return Response(sums.encode() if url.endswith(main.CHECKSUM_ASSET) else payload)
+
+        with tempfile.TemporaryDirectory() as home:
+            p.home = home
+            p._run_user_sync = lambda argv, timeout=30: subprocess.CompletedProcess(argv, 0, "ok", "")
+            out = self._with_urlopen(handler, lambda: p._install_sync("v0.1.0"))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(len(seen), 2, "the checksum file and the AppImage")
+        self.assertTrue(all(isinstance(c, ssl.SSLContext) for c in seen),
+                        "Decky's frozen backend has no default CA path, so each fetch must carry its own context")
+
     def test_a_checksum_mismatch_installs_nothing(self):
         p = fake_plugin()
         sums = f"{'0' * 64}  {main.APPIMAGE_ASSET}\n"
@@ -278,7 +437,7 @@ class Install(unittest.TestCase):
             def __exit__(self, *exc):
                 self.close()
 
-        def handler(url, timeout=0):
+        def handler(url, timeout=0, **kwargs):
             return Response(sums.encode() if url.endswith(main.CHECKSUM_ASSET) else b"a downloaded appimage")
 
         out = self._with_urlopen(handler, lambda: p._install_sync("v0.1.0"))

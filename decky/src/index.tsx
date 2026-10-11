@@ -95,7 +95,7 @@ function Content() {
     setBusy(true);
     try {
       const res = await installRuntime();
-      toaster.toast({ title: "XREAL", body: res?.ok ? `Installed the runtime (${res.tag}).` : `Not installed: ${res?.error ?? "unknown error"}` });
+      toaster.toast({ title: "XREAL", body: res?.ok ? `Installed the runtime (${res.tag}).` : `Install problem: ${res?.error ?? "unknown error"}` });
       await refresh();
     } finally {
       setBusy(false);

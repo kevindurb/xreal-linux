@@ -763,3 +763,62 @@ User units (placed, none enabled)
 ```
 
 The interactive `setup` (no flag) is unchanged: it still asks and enables on acceptance. `check` now calls an installed-but-disabled `xreal-linux.socket` informational (it used to say "not installed"), so a provisioned machine reports its units "in place" without a spurious warning.
+
+## Head-look service reboot and uninstall, on the Deck (2026-10-11, `add-decky-xreal-control` task 2.4, completed)
+
+The partial run above was finished with a full runtime install (`setup --yes`) and a reboot:
+
+| Step | Result |
+|---|---|
+| `setup --yes` | files placed; `xreal-linux.socket` and `xreal-headlook.service` written and enabled |
+| reboot → `systemctl --user is-enabled/is-active xreal-linux.socket` | `enabled` / `active` (listening) |
+| reboot → `systemctl --user is-enabled/is-active xreal-headlook.service` | `enabled` / `active`; the `XREAL Head-look Mouse` virtual device is present and the IMU stream reconnected on its own (median record interval ~0.5 ms) — the unit needs no terminal and no `WAYLAND_DISPLAY` |
+| `uninstall --yes` | all three units and the installed files/directory removed; `steamvr.forcedDriver` restored to unset; `systemctl --user is-enabled` → `not-found` |
+
+## Game-mode panel: install and mode switching, on the Deck (2026-10-11, `add-decky-xreal-control` tasks 4.2, 5.2, 5.4, 7.1)
+
+The panel was opened in game mode (Steam + gamescope; Decky's `plugin_loader.service` running as root) with the glasses attached. Three defects in the plugin backend came out — none in the runtime or the specs. Each is fixed in `decky/main.py` and covered by a unit test.
+
+### 1. The release downloads could not verify TLS
+
+Decky's backend is a **PyInstaller-frozen** Python (3.11.7, onefile). Its bundled OpenSSL looks for CAs at `/usr/lib/ssl/cert.pem` and `/usr/lib/ssl/certs`, neither of which exists here, so the interpreter's *implicit* TLS context had no trust store and **every** `urllib` fetch failed before it started. The panel showed this as `no SHA256SUMS for v0.1.0 …`.
+
+A probe plugin run inside the loader confirmed it — the same request with different contexts:
+
+```
+default_verify_paths: openssl_cafile=/usr/lib/ssl/cert.pem  (absent)
+implicit_context : FAIL  SSLCertVerificationError: unable to get local issuer certificate
+certifi_context  : OK    178 bytes   (the SHA256SUMS)
+system_context   : OK    178 bytes
+```
+
+`ssl_context()` now uses certifi's bundled bundle when it is importable (Decky ships it), then the host bundle, then the interpreter default; both downloads carry it. The AppImage download also retries a truncated transfer (up to 3 attempts) and still verifies the published sha256 before anything is used.
+
+### 2. The root backend left the runtime owned by root
+
+The plugin has `_root`, so it runs as root; it created `~/.local/share/xreal-linux/` and the AppImage **as root**, then ran the runtime's `setup` **as the session user**, which could not write the driver beside them (`Permission denied`). The install now hands the directory and the AppImage to the session user (`os.chown` to the plugin's uid/gid) before `setup` runs.
+
+### 3. PyInstaller's library path broke every child process
+
+The mode buttons all failed. The loader sets `LD_LIBRARY_PATH=/tmp/_MEI…` (its unpacked libraries) in `os.environ`, and every child inherited it, so `systemctl` loaded the loader's bundled `libcrypto.so.3` and died:
+
+```
+with inherited LD: systemctl: /tmp/_MEI…/libcrypto.so.3: version `OPENSSL_3.4.0' not found (required by …/libsystemd-shared-259.9-1.fc44.so)
+LD scrubbed      : systemctl --user is-active xreal-linux.socket -> "inactive" (rc 3)
+```
+
+`session_env()` now restores `LD_LIBRARY_PATH` to `LD_LIBRARY_PATH_ORIG` when the loader saved one, otherwise drops it, and drops `LD_PRELOAD`, so children (`setpriv`, `systemctl`, the runtime) get a clean library path. Driven through the loader afterwards, `set_mode("head_mouse")` then `set_mode("off")` returned `ok`, switching the units and leaving them disabled/inactive.
+
+The panel also now reports the **real** reason for a failed action (the first failing unit's output) instead of "The action failed.".
+
+### Install from the panel
+
+After the fixes the panel's **Install runtime v0.1.0** ran to completion: the AppImage, the driver and `VERSION` were placed under `~/.local/share/xreal-linux/` owned by the user, and **all three** user units were written **disabled** — the install enables nothing, so head mouse waits for the panel's switch. `setup` still exits non-zero on this Deck only because SteamVR here is a stub with no `bin/vrpathreg.sh`, so the driver cannot be registered. `check` reports `10 ok, 2 warnings, 2 failures`; the failures are that SteamVR registration and the user-manager `WAYLAND_DISPLAY` import (the check ran from an SSH session). Everything the package owns is in place — `check` cannot pass here because of the environment, not the package.
+
+### Mode switching from the panel
+
+With the runtime installed and the glasses attached, the panel opens showing **Off** (the units' real state) and the three buttons switch the units: Head mouse enables `xreal-headlook.service` and disables the socket; SteamVR the reverse; Off disables both. The status rows showed the glasses reachable and the runtime version. The wearer confirmed all three work from the game-mode UI.
+
+## Plugin boundaries, on the Deck (2026-10-11, `add-decky-xreal-control` task 7.2)
+
+With `tools/watch_control.py` listening, opening the panel and reading status produced no new connection to the glasses' control port (52999) and left the connector's display mode byte-identical (the 52999 traffic is the glasses' own periodic events, present with zero reads too). The plugin spawns no process inside a pressure-vessel container (`PluginLoader` opens no driver socket and the plugin runs only `systemctl --user` and the runtime CLI), makes no request to the glasses itself, and changes no SteamVR setting — the settings hash was unchanged across repeated reads.
