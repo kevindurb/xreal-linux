@@ -47,6 +47,38 @@ The presenter connects to the glasses' control port (TCP 52999), reads the facto
 
 **It sets full side-by-side itself:** it reads the input mode (`NRDpGetInputMode`) and, only if it is 0, sends `NRDpSetInputMode` = 1 (`28 22 00 00 00 08 80 00 00 03 1a 02 08 01`), at most once per connection and three times per run; a rejected or unanswered setter is logged and not retried. `--no-set-sbs` turns that off, and `--print-calibration` never sends it. Every test run on glasses you do not want switched needs `--no-set-sbs`. When the output changes mode the window is moved back onto it by leaving fullscreen and re-entering it.
 
+## Head-look input (`headlook`)
+
+`xreal-presenter headlook` reads the glasses' IMU and drives a **virtual input device**, so an ordinary desktop game can look around from head motion with no SteamVR session, no driver and no presenter window. It needs the glasses on the network (the IMU stream on TCP 52998) and `/dev/uinput`; it needs **no root**, because the session's `uaccess` ACL on `/dev/uinput` makes it writable by the logged-in user (on Bazzite the node shows `user:<you>:rw-`).
+
+    xreal-presenter headlook --model stick --device mouse --sensitivity 1.5
+    xreal-presenter headlook --model rate  --device gamepad
+
+    options: --model rate|stick|absolute (default stick)  --device gamepad|mouse (default mouse)
+             --deadzone DEG  --deadzone-rate DPS  --sensitivity X  --curve N  --range DEG
+             --rate-full DPS  --mouse-gain COUNTS_PER_DEG  --invert-x  --invert-y  --no-recenter
+             --capture FILE (run a recorded capture through the mapping and print a trace, then exit)
+             --replay FILE  (drive the device from a recorded capture instead of the live IMU; loops)
+
+Two device kinds, both named recognisably and removed when it exits:
+
+- **mouse** `XREAL Head-look Mouse` — a relative pointer (the default), with the three standard buttons declared (never pressed) so udev/libinput classify it as a mouse. Flat games' mouse-look reads it directly, and Steam/SDL pass it through unchanged, so it needs no remapping. This is the recommended device.
+- **gamepad** `XREAL Head-look Gamepad` — a two-axis stick (x right, y up). Steam's SDL only maps `ABS_X`/`ABS_Y` for an unrecognised pad and drops the right stick, so the gamepad drives its **left** stick; a Steam game needs that stick mapped to the camera (or mouse) in Steam Input. Prefer the mouse unless a game wants a stick. See `docs/findings.md` (task 5.1).
+
+`rate` follows the head's angular velocity (drift-tolerant; a still head emits nothing above the deadzone); `stick` and `absolute` follow the head's angle from a neutral, so look straight ahead and recenter. **Recenter** happens on start and whenever the process gets `SIGUSR1` (`kill -USR1 <pid>`); `--no-recenter` keeps the world frame instead. The service prints a status line (device, model, IMU, last recenter) on start, on a change and every ten seconds, and stops emitting head motion when the IMU is unavailable.
+
+The glasses must be in Follow mode, Stabilizer off and auto sleep off; the host cannot read or set those.
+
+## Flat stereo (`sbs`)
+
+`xreal-presenter sbs` puts the glasses into full side-by-side and back for a game that renders its own side-by-side (a "flat" 3D game or a VR-to-flat mod), without SteamVR: the game renders a `3840x1080` picture (two 1920x1080 halves) and the glasses' own SBS mode splits it. This is the one path that sets the display mode outside a SteamVR session.
+
+    xreal-presenter sbs on      # set full SBS and supervise, re-setting it if the glasses drop to 2D
+    xreal-presenter sbs off     # restore the 2D mode recorded before the session
+    xreal-presenter sbs status  # the recorded mode and the glasses' current input mode
+
+`on` records the mode the glasses were in and sends the one setter, `NRDpSetInputMode` = 1 (`28 22 00 00 00 08 80 00 00 03 1a 02 08 01`), then keeps watching: if the glasses drop to 2D it sets full SBS again, up to three times, then gives up and says so. `off` sends the recorded mode's setter (value 0) and clears the record. `status` exits non-zero when the control port cannot be reached. Both `on` and `off` refuse to act while a SteamVR session is running, because SteamVR owns the display mode then.
+
 ## Test grid (`--test-grid`)
 
 `xreal-presenter --monitor DP-1 --test-grid` draws straight lines every 120 picture pixels, a frame, a centre cross and, in the four corners, a ruler with a tick every 20 rows from the top and bottom edges, instead of the eye images (also without SteamVR). Use it to judge the visible area. On the tested unit, in full SBS: the lines looked straight, there were no black bars above and below, and the bottom border was hidden by the lens's curved edge. The factory display-distortion grid made it worse in both directions and its code was removed (see `docs/findings.md`).

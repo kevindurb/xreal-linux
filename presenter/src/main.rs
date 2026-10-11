@@ -12,11 +12,14 @@
 
 mod display_wait;
 mod glasses;
+mod headlook;
 mod link;
 mod output;
+mod sbs;
 mod setup;
 mod splash;
 mod tracking;
+mod uinput;
 mod warp;
 
 use ash::{khr, vk, Device, Entry, Instance};

@@ -656,6 +656,26 @@ pub fn set_sbs_once() -> bool {
     false
 }
 
+/// Read the glasses' current input mode once (0 = regular 2D, non-zero = full SBS). `Err` says why it could not be read.
+/// The getter (10273) is read-only and always allowed.
+pub fn read_input_mode() -> Result<u64, String> {
+    for attempt in 0..RESTORE_CONNECT_TRIES {
+        let hosts = hosts();
+        let addr = hosts[attempt as usize % hosts.len()].as_str();
+        let Ok(stream) = TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(2)) else {
+            std::thread::sleep(Duration::from_millis(300));
+            continue;
+        };
+        let mut c = Conn { stream, buf: Vec::new(), last_temperature_log: None };
+        return c
+            .request(GET_INPUT_MODE, 2, &GETTER_BODY, Duration::from_secs(5))
+            .as_deref()
+            .and_then(reply_value)
+            .ok_or_else(|| "the glasses did not answer the input-mode getter".to_string());
+    }
+    Err("could not reach the glasses' control port".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

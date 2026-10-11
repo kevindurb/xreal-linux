@@ -24,13 +24,15 @@ pub enum Dispatch {
 pub const GLASSES_NOTICE: &str = "When SteamVR starts using the glasses they switch to full side-by-side (SBS), and back to the mode they were in when SteamVR stops. \
 Each switch re-plugs the glasses' display for about two seconds, so the desktop may rearrange windows. Nothing is done to the glasses while SteamVR is not running, so they stay usable as a normal monitor.";
 
-const USAGE: &str = "usage: xreal-linux [setup | check | fix | status | uninstall | restore-display] [--dry-run] [--yes]
+const USAGE: &str = "usage: xreal-linux [setup | check | fix | status | uninstall | restore-display | headlook | sbs] [--dry-run] [--yes]
   setup            install for this user (asks first), register the driver, enable the background service, fix SteamVR settings
   check            report whether everything is in place (changes nothing)
   fix              set the SteamVR settings the setup needs (asks for each; SteamVR must not be running)
   status           what is installed and what the service did last
   uninstall        undo setup
-  restore-display  put the glasses back in the 2D mode recorded before a session";
+  restore-display  put the glasses back in the 2D mode recorded before a session
+  headlook         drive a virtual gamepad or mouse from the glasses' head motion, without SteamVR
+  sbs              put the glasses in full SBS for a game that renders its own side-by-side, and restore it";
 
 pub fn dispatch(args: &[String]) -> Dispatch {
     let in_appimage = std::env::var_os("APPIMAGE").is_some();
@@ -44,6 +46,8 @@ pub fn dispatch(args: &[String]) -> Dispatch {
     let (dry_run, yes) = (rest.contains(&"--dry-run"), rest.contains(&"--yes") || rest.contains(&"-y"));
     match cmd {
         "serve" => return Dispatch::Present(serve_args(std::env::var("XREAL_REPROJECT").ok().as_deref(), std::env::var("XREAL_EXTRA_ARGS").ok().as_deref())),
+        "headlook" => return Dispatch::Exit(crate::headlook::command(&rest)),
+        "sbs" => return Dispatch::Exit(crate::sbs::command(&rest)),
         "restore-display" => {
             let r = crate::glasses::restore_previous_mode();
             let pending = matches!(r, crate::glasses::Restore::Pending(_));

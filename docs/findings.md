@@ -637,3 +637,84 @@ Seen while checking the splash: SteamVR presented at 60 fps for about 25 s, then
 - **Measured:** `vrserver` then started a new compositor, which failed with `VRInitError_Compositor_CreateDriverDirectModeResolveTextures` after `NewSharedVulkanImage failed for image 0` (1344x756, format 43; the first compositor used 1336x752). `vrserver` logged `Failed to unref VRCompositor resource` six times when the first one died. Nothing recovered until SteamVR was restarted.
 - **Not known:** why RADV crashed, and whether our driver's resource handling makes the second allocation fail or SteamVR does it after any compositor crash. Separately, `vrcompositor` also segfaults at every normal shutdown here (jump to a freed address, seen at 15:21, 15:25 and 15:54:17); that is exit noise.
 - The splash worked as designed throughout; its text "Waiting for SteamVR" is misleading in this state because SteamVR is up but has no compositor.
+
+## Head-look mapping, offline (2026-10-10, `add-headlook-mode` Phase 0)
+
+The head-look tier maps the glasses' orientation to a virtual input device for games outside SteamVR. Phase 0 checks the mapping maths offline on the recorded captures, with **no glasses attached**.
+
+**Method.** The simulator (`presenter/src/headlook.rs`, `simulate_capture` / `print_trace`) reads a raw dump of the 134-byte IMU stream, runs it through the same `tracking::Fusion` the presenter uses, and maps each pose with the pure core. The neutral reference is the first valid pose (so a position model starts centred). Reproduce with:
+
+    cd presenter && cargo test --offline simulator_traces_each_capture -- --nocapture
+
+Defaults used: angle deadzone 2 deg, rate deadzone 3 dps, position range 30 deg, rate full-scale 90 dps, sensitivity 1.0. `imu_yaw.bin` is a 20.0 s yaw sweep, `imu_move.bin` a 38.0 s mixed motion, `xreal_52998_still.bin` 5.0 s held still.
+
+| Capture | Model | axis.x range | axis.y range | saturated | axis zero | fused yaw |
+|---|---|---|---|---|---|---|
+| imu_yaw (20.0 s) | rate | -0.56 .. +0.40 | -0.02 .. +0.03 | 0 | 28% | -121.15 deg/min |
+| imu_yaw | stick / absolute | -0.49 .. +1.00 | -0.09 .. +0.00 | 15177 (76%) | 1% | -121.15 deg/min |
+| imu_move (38.0 s) | rate | -0.31 .. +0.07 | -0.38 .. +0.38 | 0 | 59% | +19.09 deg/min |
+| imu_move | stick / absolute | -0.38 .. -0.00 | -0.77 .. +0.92 | 0 | 0% | +19.09 deg/min |
+| xreal_52998_still (5.0 s) | rate / stick / absolute | -0.00 .. -0.00 | +0.00 .. +0.00 | 0 | **100%** | **+2.15 deg/min** |
+
+**Measured.**
+- The rate model follows the yaw sweep (axis.x -0.56..+0.40) and leaves pitch untouched on a pure-yaw capture, so its channel separation is right.
+- The deadzone holds a still head: on the still capture **every model emitted exactly zero for 100% of samples** (the residual bias, below the 3 dps rate deadzone, never reached the axis).
+- A 30 deg position range clamps on a large sweep (stick/absolute saturate on 76% of the yaw capture) and tracks a smaller one (imu_move keeps axis.y within -0.77..+0.92 without clamping).
+- **Drift:** the fused yaw wandered **+2.15 deg/min** on the 5.0 s still capture (residual gyro bias). With the deadzone this commands no rate output; a position model's neutral would drift about that fast if never recentred. The yaw capture's -121.15 deg/min is the wearer actually turning (about -40 deg net), not drift.
+
+**Not measured (later phases).** Whether a game binds the virtual device and whether Steam hides it (Phase 1), end-to-end latency (Phase 1/2), whether a game's own SBS maps to 3840x1080 (Phase 1), and the wearer's model preference (Phase 2). The drift figure rests on one 5 s capture; a longer still capture will firm it up (Phase 3).
+
+## Virtual input device, on the Deck (2026-10-10, `add-headlook-mode` task 2.2)
+
+The release binary built on the dev machine (glibc 2.43; the Deck also reports glibc 2.43, so no container build was needed) copied to `~/hl/xreal-presenter` and run as the session user, with no root. `/dev/uinput` is `crw-rw----+ root root` with the `user:kevindurb:rw-` ACL, so opening it as the user works.
+
+**Measured.** Both kinds appear in `/proc/bus/input/devices`, are listed by `evtest`, and are removed when the process exits.
+
+| Kind | Name | Bus / Vendor / Product | Node | Caps |
+|---|---|---|---|---|
+| gamepad | `XREAL Head-look Gamepad` | 0003 / 1d6b / 0a01 | `event18`, `js1` | `EV=b` (SYN, KEY, ABS), `ABS=3` (X, Y), `KEY=3000000000000` (BTN_SOUTH, BTN_EAST) |
+| mouse | `XREAL Head-look Mouse` | 0003 / 1d6b / 0a02 | `event18`, `mouse4` | `EV=7` (SYN, KEY, REL), `REL=3` (X, Y), `KEY=70000` (BTN_LEFT, BTN_RIGHT, BTN_MIDDLE) |
+
+- The vendor id is the kernel's `1d6b` (Linux Foundation); products are `0a01`/`0a02`, version `0001`.
+- `evtest` listed the gamepad by name; the mouse was confirmed from `/proc/bus/input/devices` and `/sys/class/input/*/device/{name,id}` (in the `evtest` run it was not in the printed list, likely a race with the reused `event18`).
+- On exit (SIGTERM) the kernel drops the device: `XREAL Head-look` count in `/proc/bus/input/devices` returns to 0.
+- **Replay drives real events:** `headlook --device gamepad --replay captures/imu_yaw.bin` made `evtest` read `ABS_X` at ~1 kHz with values sweeping (for example 26822 → 27089, about +0.82 of full scale) and no `ABS_Y`, matching a pure-yaw capture. This is the end-to-end mapping → uinput → evdev path, verified with no game and no wearer.
+- A short-lived experiment drove the **right** stick instead (`ABS_RX`/`ABS_RY`, caps `ABS=1b`) on the theory that look is the right stick. Steam's SDL then dropped those axes entirely (task 5.1), so the gamepad was reverted to the left stick and the **mouse became the default** device.
+- **The mouse needs buttons to be seen.** The mouse first declared only `REL_X`/`REL_Y`; udev's input-id then reported `ID_INPUT=1` but **not** `ID_INPUT_MOUSE`, and the compositor ignored the device (the cursor never moved even once it emitted events). Declaring `BTN_LEFT`/`BTN_RIGHT`/`BTN_MIDDLE` (never pressed) makes udev set `ID_INPUT_MOUSE=1` and adds the `/dev/input/mouseN` node, after which the pointer moves. The gamepad was unaffected because it already had buttons.
+
+**Also noted.** With the glasses powered, the Deck reached the live IMU at `169.254.1.1:52998` (`IMU connected` in the log), so Phase 1 can exercise the real sensor, not only replays.
+
+**Not measured.** Whether a game binds the device and whether Steam holds or hides it (tasks 5.1); end-to-end IMU-to-event latency (task 5.2).
+
+## Game binds the device, on the Deck (2026-10-10, `add-headlook-mode` task 5.1)
+
+The replay ran as a detached user service (`systemd-run --user`, so it outlives the SSH session; `setsid` alone did not on this Deck). Both device kinds are created and emit real events.
+
+**Steam sees the gamepad, but only through a left-stick mapping.** Steam's controller log (`~/.local/share/Steam/logs/controller.txt`) shows SDL synthesising a mapping for the unrecognised device:
+
+```
+SDL Mapping for 1d6b/a01: 0300a99f6b1d0000010a000001000000,XREAL Head-look Gamepad,a:b0,b:b1,leftx:a0,lefty:a1,platform:Linux,
+```
+
+There is **no `rightx`/`righty`**. SDL's fallback for an unknown gamepad maps **axes 0/1 (`ABS_X`/`ABS_Y`) to the left stick** and ignores `ABS_RX`/`ABS_RY` entirely, so a right-stick output is invisible to Steam Input and to any Steam/SDL game — Steam lists the controller but its test UI shows no stick movement. The same mapping string was produced both before and after the device declared RX/RY, confirming the axes are dropped rather than mis-mapped.
+
+**Consequence.** Emitting head-look on `ABS_RX`/`ABS_RY` cannot reach a Steam-wrapped game. The gamepad now emits on **`ABS_X`/`ABS_Y`** (SDL's `leftx`/`lefty`), but the **mouse is the default device**: SDL/Steam pass a pointer through unchanged, so flat games' mouse-look reads it directly and nothing needs remapping. A gamepad user remaps the left stick to camera/mouse in Steam Input.
+
+**The mouse is the working path, after two device bugs.** Neither bug is about SDL; both would hit any consumer.
+
+1. **Fractional counts were rounded away.** `imu_yaw.bin` is a slow 20 s capture (mean yaw rate 2.03 dps) delivered at ~1 kHz, so the rate-based mouse delta is about `20 × 2.03 × 0.001 ≈ 0.04` counts per tick. `mouse_value` rounded each tick on its own, so every tick rounded to zero and the device emitted **no** `REL_X`/`REL_Y` at all. `Session` now carries the fractional remainder between ticks, so a high-rate, low-count stream still moves the pointer (unit test `mouse_counts_accumulate_across_ticks`).
+2. **The mouse needed buttons.** Declaring only `REL_X`/`REL_Y`, udev's input-id reported `ID_INPUT=1` but **not** `ID_INPUT_MOUSE`, and the compositor ignored the device entirely — the cursor did not move even once events were emitted. Declaring `BTN_LEFT`/`BTN_RIGHT`/`BTN_MIDDLE` (never pressed) makes udev set `ID_INPUT_MOUSE=1` and add the `/dev/input/mouseN` node, after which the pointer moves. The gamepad was unaffected because it already had buttons.
+
+**Measured.** With both fixes the mouse drives the desktop pointer: the replayed capture moved the cursor in Desktop Mode, and the device is classified `ID_INPUT_MOUSE=1` with handlers `event18 mouse4`.
+
+**Live head tracking works.** Running against the live IMU (`headlook --device mouse`, glasses connected to `169.254.1.1:52998`), the wearer reported the cursor follows real head motion correctly — turn left moves it left, look up moves it up, and it stops when the head is still (rate behaviour) — "literally perfect". So the mouse path binds and reacts end to end with no Steam Input setup.
+
+**Still to measure.** Whether a specific game's camera reacts through the mouse device (the desktop pointer is confirmed), and whether a gamepad with its left stick remapped to the camera in Steam Input works end to end.
+
+## Head-look latency, on the Deck (2026-10-10, `add-headlook-mode` task 5.2)
+
+With the glasses powered and their live IMU streaming (`169.254.1.1:52998`), the gamepad device ran for 26 s. The service prints a window every ten seconds: the time from an IMU sample reaching the host (`PoseState.host_ns`) to the mapped `uinput` event being written.
+
+**Measured.** First window: **p50 0.5 ms, p95 1.0 ms over 1960 samples** (the consumer loop at ~5 ms / 200 Hz). The process sat in `hrtimer_nanosleep` (its own sleep) and the IMU thread in `wait_woken` (the socket read), so neither was blocked.
+
+**Scope.** This is the host-arrival to device-event leg only; it does not include the glasses-to-host network leg or the game's own handling. Well inside the test plan's `&lt; ~10 ms` device-side p95 target.
