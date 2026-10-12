@@ -27,7 +27,8 @@ Install/update downloads the release that matches the plugin's own version: it f
 downloads `xreal-linux-x86_64.AppImage`, verifies the published checksum, and only then places the file and runs
 `setup --yes --no-enable`. That places the runtime and **all** the user units but enables none of them, so a fresh install
 is **Off** — the panel's mode switch is what turns head mouse or SteamVR on. A mismatch (no asset for the tag, or a bad
-checksum) installs nothing.
+checksum) installs nothing. SteamVR does not need to be installed first: the runtime and its units are placed either way,
+and the install only reports the driver registration as a note until SteamVR is present.
 
 Uninstalling the plugin **never** removes the runtime, your units or your settings — that stays yours.
 
