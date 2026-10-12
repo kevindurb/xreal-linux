@@ -836,3 +836,20 @@ A stand-in runtime whose `status --json` lacked the `device`/`units` keys (so th
 | panel report | usable again (`device` and `units` present), so the update prompt is gone |
 
 So the update replaces in place and the reported version becomes the release's. The run again ended only with the environmental `…/vrpathreg.sh not found` (SteamVR is a stub), which the plugin now writes to its log with the reason.
+
+## The v0.1.1 release (2026-10-12, `add-decky-xreal-control`)
+
+`v0.1.1` carries the three frozen-backend fixes and the "install succeeds without SteamVR" behaviour. Its assets were checked and then re-verified on the Deck:
+
+| Check | Result |
+|---|---|
+| release assets | `xreal-linux-x86_64.AppImage` (2,759,160 B), `xreal-control.zip` (13,986 B), `SHA256SUMS` |
+| `sha256sum -c SHA256SUMS` | both artifacts `OK` |
+| plugin bundle | `main.py` contains `_runtime_in_place`; `package.json` version `0.1.1` |
+| Deck plugin | redeployed as `0.1.1`, `plugin_loader.service` active |
+| panel install (deployed plugin, tag `v0.1.1`) | `ok: true`, no error; note `…/vrpathreg.sh not found …` |
+| installed runtime | `VERSION commit 3e30aea` (the tag's commit), AppImage sha `427b6908592603a1644b2b202179d4fdcf2f48de5578b1c4b813627baec0a008` (the release's) |
+| units after install | all three present, **disabled/inactive** — a fresh install is Off |
+
+So an install from the panel succeeds on a machine with no SteamVR, and the runtime it places is the release's own.
+
