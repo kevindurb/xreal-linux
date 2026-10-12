@@ -31,7 +31,7 @@
 - [x] 5.1 Implement runtime detection and version reporting from the structured report, including the "not installed" and "runtime too old" cases. Verify tests for each case over mocked reports.
 - [x] 5.2 Implement the install/update action: download the AppImage, verify it against the published checksum, refuse and report on mismatch, place it and run `setup --yes --no-enable` as the session user (placing every user unit but enabling none, so the panel's switch is what selects a mode). Verify tests for checksum-refusal and command construction, and a Deck dry run (or a scratch user) that a verified artifact installs and an unverified one does not.
 - [x] 5.3 Implement version coupling: request the asset for the plugin's own release tag and report a mismatch instead of installing a different version. Verify a test for the matching, missing and mismatched cases.
-- [ ] 5.4 Deck verification: on a machine with no runtime, install from the panel and confirm `check` passes and the units exist; then run the update path from an older runtime and confirm in-place replacement and the reported version. Record the results in `docs/findings.md`.
+- [x] 5.4 Deck verification: on a machine with no runtime, install from the panel and confirm `check` passes and the units exist; then run the update path from an older runtime and confirm in-place replacement and the reported version. Record the results in `docs/findings.md`.
 
 ## 6. Release and CI artifacts
 

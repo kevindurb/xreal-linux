@@ -815,6 +815,8 @@ The panel also now reports the **real** reason for a failed action (the first fa
 
 After the fixes the panel's **Install runtime v0.1.0** ran to completion: the AppImage, the driver and `VERSION` were placed under `~/.local/share/xreal-linux/` owned by the user, and **all three** user units were written **disabled** — the install enables nothing, so head mouse waits for the panel's switch. `setup` still exits non-zero on this Deck only because SteamVR here is a stub with no `bin/vrpathreg.sh`, so the driver cannot be registered. `check` reports `10 ok, 2 warnings, 2 failures`; the failures are that SteamVR registration and the user-manager `WAYLAND_DISPLAY` import (the check ran from an SSH session). Everything the package owns is in place — `check` cannot pass here because of the environment, not the package.
 
+A missing SteamVR is not an install failure, though: the runtime can be installed before SteamVR exists, and the driver is registered later once it is. The panel keys success on the runtime actually being in place (the AppImage, the driver library and all three user units) rather than on `setup`'s exit code, so an install that only could not register the driver reports **success** and keeps the reason (`…/vrpathreg.sh not found …`) as a note. A machine where SteamVR *is* present still gets the driver registered, and an install that placed nothing still reports the problem.
+
 ### Mode switching from the panel
 
 With the runtime installed and the glasses attached, the panel opens showing **Off** (the units' real state) and the three buttons switch the units: Head mouse enables `xreal-headlook.service` and disables the socket; SteamVR the reverse; Off disables both. The status rows showed the glasses reachable and the runtime version. The wearer confirmed all three work from the game-mode UI.
@@ -822,3 +824,15 @@ With the runtime installed and the glasses attached, the panel opens showing **O
 ## Plugin boundaries, on the Deck (2026-10-11, `add-decky-xreal-control` task 7.2)
 
 With `tools/watch_control.py` listening, opening the panel and reading status produced no new connection to the glasses' control port (52999) and left the connector's display mode byte-identical (the 52999 traffic is the glasses' own periodic events, present with zero reads too). The plugin spawns no process inside a pressure-vessel container (`PluginLoader` opens no driver socket and the plugin runs only `systemctl --user` and the runtime CLI), makes no request to the glasses itself, and changes no SteamVR setting — the settings hash was unchanged across repeated reads.
+
+## Panel update path from a stale runtime (2026-10-12, `add-decky-xreal-control` task 5.4)
+
+A stand-in runtime whose `status --json` lacked the `device`/`units` keys (so the panel calls it unusable) was placed as the installed AppImage, with `VERSION` reporting commit `000000000000`. The panel then showed **Runtime update needed** and an **Update runtime 0.1.0** button. Clicking it downloaded the tag's AppImage, verified the published sha256, replaced the stand-in **in place** and re-ran `setup --yes --no-enable`. Afterwards:
+
+| Check | Result |
+|---|---|
+| installed AppImage sha256 | `b3b70eca6cfd139c1fe2ce1aaeeb221bcba670d28fff35ec89349abf29103084` — the release's own |
+| `VERSION` | `commit a00195b4f070` (the release's) |
+| panel report | usable again (`device` and `units` present), so the update prompt is gone |
+
+So the update replaces in place and the reported version becomes the release's. The run again ended only with the environmental `…/vrpathreg.sh not found` (SteamVR is a stub), which the plugin now writes to its log with the reason.

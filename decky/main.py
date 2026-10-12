@@ -32,6 +32,7 @@ VALID_MODES = ("off", "head_mouse", "steamvr")
 REPO = "kevindurb/xreal-linux"
 APPIMAGE_ASSET = "xreal-linux-x86_64.AppImage"  # the release asset we download
 INSTALLED_APPIMAGE = "xreal-linux.AppImage"  # the name setup places in $XDG_DATA_HOME/xreal-linux
+INSTALLED_DRIVER = "driver/xreal/bin/linux64/driver_xreal.so"  # relative to the runtime dir
 CHECKSUM_ASSET = "SHA256SUMS"
 # The structured report must carry these for the panel to render; an older runtime lacks them ("runtime too old").
 REQUIRED_REPORT_KEYS = ("device", "units")
@@ -50,6 +51,10 @@ def appimage_path(home: str) -> str:
 
 def version_file(home: str) -> str:
     return os.path.join(runtime_dir(home), "VERSION")
+
+
+def units_dir(home: str) -> str:
+    return os.path.join(home, ".config", "systemd", "user")
 
 
 def parse_version(text: str):
@@ -318,6 +323,8 @@ class Plugin:
         result = await asyncio.to_thread(self._install_sync, expected_tag(self.version))
         if not result.get("ok"):
             self._log("warning", f"install of {expected_tag(self.version)} did not complete: {result.get('error')}")
+        elif result.get("note"):
+            self._log("info", f"installed {expected_tag(self.version)}; the driver is not registered yet: {result['note']}")
         return result
 
     def _log(self, level, message):
@@ -356,10 +363,32 @@ class Plugin:
         # `--no-enable`: place the files and every user unit but enable none, so the panel's switch is what turns a mode on.
         p = self._run_user_sync([dest, "setup", "--yes", "--no-enable"], timeout=900)
         output = ((p.stdout or "") + (p.stderr or "")).strip()
-        result = {"ok": p.returncode == 0, "kind": "installed", "tag": tag, "output": output[-2000:]}
-        if p.returncode != 0:
-            result["error"] = first_problem(output) or f"setup exited with {p.returncode}"
+        ok = p.returncode == 0
+        note = first_problem(output).removeprefix("- ").strip() if not ok else ""
+        if not ok and self._runtime_in_place():
+            # A machine without SteamVR cannot register the driver, and setup exits non-zero for that alone. The runtime
+            # and its units are in place, so the install succeeded; the driver is registered once SteamVR is present.
+            ok = True
+        result = {"ok": ok, "kind": "installed", "tag": tag, "output": output[-2000:]}
+        if ok:
+            if note:
+                result["note"] = note
+        else:
+            result["error"] = note or f"setup exited with {p.returncode}"
         return result
+
+    def _runtime_in_place(self):
+        """Whether setup actually provisioned the runtime: the AppImage, the driver library and all three user units.
+
+        Registering the driver with SteamVR needs SteamVR to be installed; on a machine without it, setup is otherwise
+        done and this is what tells the difference between that and an install that placed nothing.
+        """
+        if not os.path.isfile(appimage_path(self.home)):
+            return False
+        if not os.path.isfile(os.path.join(runtime_dir(self.home), INSTALLED_DRIVER)):
+            return False
+        units = units_dir(self.home)
+        return all(os.path.isfile(os.path.join(units, unit)) for unit in (SOCKET, SERVICE, HEADLOOK))
 
     def _download_verified(self, app_url, want, context, attempts=3):
         """Fetch the asset into a temp file, retrying a flaky transfer (a truncated one would otherwise look like a bad

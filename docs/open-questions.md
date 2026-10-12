@@ -40,9 +40,13 @@ Still open:
   was proven for the head-look unit (task 2.4), but a mode chosen in the panel has not itself been reboot-tested.
 - The **update path** from an older installed runtime (the panel's "Update runtime"): installing onto a machine with no
   runtime is verified; replacing an older runtime in place and seeing the reported version change is not.
-- The **published plugin bundle** `xreal-control.zip` on tag `v0.1.0` predates the three plugin fixes in `decky/main.py`
-  (the runtime AppImage is unaffected). Shipping the fixes means a new tag whose release carries both the AppImage and the
-  plugin bundle — the plugin installs the runtime from its own tag, so a plugin-only re-cut would not do.
+- The three **Decky frozen-backend fixes** (TLS CA bundle, runtime ownership, `LD_LIBRARY_PATH`) ship in `v0.1.1`. The
+  plugin installs the runtime from its *own* tag, so the AppImage and the plugin bundle must always be released together —
+  a plugin-only re-cut would make the panel look for assets that do not exist.
+- Whether the runtime's own `setup` should also treat a **missing SteamVR** as a non-failure. The panel now does (it keys
+  success on the runtime being in place), but a standalone `setup` still exits non-zero and lists the registration under
+  `Problems:`; `check` likewise still reports the driver as not registered. That is honest for a SteamVR machine but noisy
+  for one that has not installed SteamVR yet.
 - Whether **Decky's frozen loader keeps injecting `LD_LIBRARY_PATH`** into the plugin's environment. `session_env()` scrubs
   it defensively (and restores `LD_LIBRARY_PATH_ORIG` when present); a future loader that bundles cleanly would need no change.
 

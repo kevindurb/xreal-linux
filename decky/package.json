@@ -1,6 +1,6 @@
 {
   "name": "xreal-control",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Decky plugin: an XREAL game-mode control panel for the xreal-linux runtime",
   "type": "module",
   "scripts": {

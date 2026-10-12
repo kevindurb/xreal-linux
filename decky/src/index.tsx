@@ -28,7 +28,7 @@ interface ModeResult extends State {
 
 const getState = callable<[], State>("get_state");
 const setMode = callable<[mode: string, confirm?: boolean], ModeResult>("set_mode");
-const installRuntime = callable<[], { ok: boolean; kind?: string; error?: string; tag?: string; output?: string }>("install_runtime");
+const installRuntime = callable<[], { ok: boolean; kind?: string; error?: string; tag?: string; note?: string; output?: string }>("install_runtime");
 
 const MODES: { id: string; label: string; hint: string }[] = [
   { id: "off", label: "Off", hint: "The glasses stay an ordinary monitor; nothing of xreal-linux runs." },
@@ -95,7 +95,10 @@ function Content() {
     setBusy(true);
     try {
       const res = await installRuntime();
-      toaster.toast({ title: "XREAL", body: res?.ok ? `Installed the runtime (${res.tag}).` : `Install problem: ${res?.error ?? "unknown error"}` });
+      const body = res?.ok
+        ? `Installed the runtime (${res.tag}).${res.note ? `\n${res.note}` : ""}`
+        : `Install problem: ${res?.error ?? "unknown error"}`;
+      toaster.toast({ title: "XREAL", body });
       await refresh();
     } finally {
       setBusy(false);

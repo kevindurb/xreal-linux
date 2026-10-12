@@ -372,6 +372,67 @@ class Install(unittest.TestCase):
             self.assertEqual(out["kind"], "installed")
             self.assertIn("SteamVR is not installed", out["error"], "the panel is told the reason, not 'unknown error'")
 
+    def test_an_install_that_only_lacks_steamvr_is_still_successful(self):
+        p = fake_plugin()
+        payload = b"a verified appimage"
+        digest = hashlib.sha256(payload).hexdigest()
+        sums = f"{digest}  {main.APPIMAGE_ASSET}\n"
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+
+        def handler(url, timeout=0, **kwargs):
+            return Response(sums.encode() if url.endswith(main.CHECKSUM_ASSET) else payload)
+
+        problems = "Problems:\n  - /home/deck/.local/share/Steam/steamapps/common/SteamVR/bin/vrpathreg.sh not found: is SteamVR installed (Steam app 250820)?\n"
+
+        def run(argv, timeout=30):
+            return subprocess.CompletedProcess(argv, 1, problems, "")
+
+        with tempfile.TemporaryDirectory() as home:
+            p.home = home
+            p._run_user_sync = run
+            # setup placed the driver and the three units; only the SteamVR registration is missing.
+            os.makedirs(os.path.dirname(os.path.join(main.runtime_dir(home), main.INSTALLED_DRIVER)), exist_ok=True)
+            open(os.path.join(main.runtime_dir(home), main.INSTALLED_DRIVER), "w").close()
+            os.makedirs(main.units_dir(home), exist_ok=True)
+            for unit in (main.SOCKET, main.SERVICE, main.HEADLOOK):
+                open(os.path.join(main.units_dir(home), unit), "w").close()
+            out = self._with_urlopen(handler, lambda: p._install_sync("v0.1.0"))
+        self.assertTrue(out["ok"], out)
+        self.assertNotIn("error", out, "a missing SteamVR is not an install failure")
+        self.assertIn("vrpathreg", out["note"], "but the reason is still reported")
+
+    def test_an_install_that_placed_nothing_reports_the_problem(self):
+        p = fake_plugin()
+        payload = b"a verified appimage"
+        digest = hashlib.sha256(payload).hexdigest()
+        sums = f"{digest}  {main.APPIMAGE_ASSET}\n"
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+
+        def handler(url, timeout=0, **kwargs):
+            return Response(sums.encode() if url.endswith(main.CHECKSUM_ASSET) else payload)
+
+        def run(argv, timeout=30):
+            return subprocess.CompletedProcess(argv, 1, "Problems:\n  - cannot write the driver beside the app\n", "")
+
+        with tempfile.TemporaryDirectory() as home:
+            p.home = home
+            p._run_user_sync = run
+            out = self._with_urlopen(handler, lambda: p._install_sync("v0.1.0"))
+        self.assertFalse(out["ok"], "setup that placed nothing is still a failure")
+        self.assertIn("cannot write the driver", out["error"])
+
     def test_a_flaky_download_is_retried_until_the_checksum_matches(self):
         p = fake_plugin()
         payload = b"a verified appimage"
